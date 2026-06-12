@@ -46,6 +46,14 @@ const esc = s => s == null ? '' : String(s)
   .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 const ts = ms => new Date(ms).toLocaleTimeString('en',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'});
 
+// Safe string conversion — never returns [object Object]
+function safeStr(val) {
+  if (val == null) return '';
+  if (typeof val === 'string') return val;
+  if (typeof val === 'number' || typeof val === 'boolean') return String(val);
+  try { return JSON.stringify(val); } catch { return '[Complex object]'; }
+}
+
 
 function pretty(val) {
   if (val == null) return '';
@@ -64,10 +72,12 @@ function syntaxHighlight(json) {
 }
 
 function renderJSON(val) {
+  if (val == null) return '<span style="color:var(--text-dim)">Empty response</span>';
   try {
     const str = typeof val === 'string' ? val : JSON.stringify(val, null, 2);
+    if (!str || str === '{}' || str === '""') return '<span style="color:var(--text-dim)">Empty response body</span>';
     return syntaxHighlight(esc(str));
-  } catch { return esc(typeof val === 'object' ? JSON.stringify(val) : String(val)); }
+  } catch { try { return esc(JSON.stringify(val)); } catch { return esc('[Unserializable data]'); } }
 }
 
 function tryURL(url) { try { return new URL(url); } catch { return null; } }

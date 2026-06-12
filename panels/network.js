@@ -203,13 +203,13 @@ function initNetworkPanel() {
           method: r.method || 'GET',
           url: r.url || '',
           headers: Object.entries(r.requestHeaders || {}).map(([n, v]) => ({ name: n, value: v })),
-          postData: r.requestBody ? { mimeType: 'application/json', text: typeof r.requestBody === 'object' ? JSON.stringify(r.requestBody) : String(r.requestBody) } : undefined,
+          postData: r.requestBody ? { mimeType: 'application/json', text: typeof r.requestBody === 'object' ? JSON.stringify(r.requestBody) : safeStr(r.requestBody) } : undefined,
         },
         response: {
           status: r.status || 0,
           statusText: r.statusText || '',
           headers: Object.entries(r.responseHeaders || {}).map(([n, v]) => ({ name: n, value: v })),
-          content: { size: -1, mimeType: 'application/json', text: r.responseBody ? (typeof r.responseBody === 'object' ? JSON.stringify(r.responseBody) : String(r.responseBody)) : '' },
+          content: { size: -1, mimeType: 'application/json', text: r.responseBody ? (typeof r.responseBody === 'object' ? JSON.stringify(r.responseBody) : safeStr(r.responseBody)) : '' },
         },
         timings: { send: 0, wait: r.duration || 0, receive: 0 },
       };
@@ -835,7 +835,7 @@ function renderNetDetailContent(r) {
       if (!keys.length) return `<div class="section-label">${title}</div><span style="color:var(--text-dim)">none</span>`;
       return `<div class="section-label">${title}</div><div class="kv-grid">${keys.map(k => {
         let val = h[k];
-        if (val && typeof val === 'object') { try { val = JSON.stringify(val); } catch { val = String(val); } }
+        if (val && typeof val === 'object') { try { val = JSON.stringify(val); } catch { val = '[Complex object]'; } }
         return `<span class="kv-key">${esc(k)}</span><span class="kv-val">${esc(val)}</span>`;
       }).join('')}</div>`;
     };
@@ -870,6 +870,7 @@ function renderNetDetailContent(r) {
     const isErrStatus = _isHttpError(r);
     if (r.phase === 'error' && !r.responseBody) { body.innerHTML = `<span style="color:var(--red)">${esc(r.error || 'Request failed')}</span>`; return; }
     if (!r.responseBody && r.phase !== 'response') { body.innerHTML = '<span style="color:var(--text-dim)">Pending...</span>'; return; }
+    if (r.responseBody == null || r.responseBody === '') { body.innerHTML = '<span style="color:var(--text-dim)">Empty response body</span>'; return; }
     // Render as collapsible JSON tree with right-click copy
     const val = r.responseBody;
     let treeData = val;
@@ -896,13 +897,14 @@ function renderNetDetailContent(r) {
       });
     } else {
       body.innerHTML = isErrStatus
-        ? `<span style="color:var(--red)">${esc(String(r.responseBody))}</span>`
+        ? `<span style="color:var(--red)">${esc(safeStr(r.responseBody))}</span>`
         : '<span style="color:var(--text-dim)">No preview available</span>';
     }
   } else if (tab === 'response') {
     const isErrStatus = _isHttpError(r);
     if (r.phase === 'error' && !r.responseBody) { body.innerHTML = `<span style="color:var(--red)">${esc(r.error || 'Request failed')}</span>`; return; }
     if (!r.responseBody && r.phase !== 'response') { body.innerHTML = '<span style="color:var(--text-dim)">Pending...</span>'; return; }
+    if (r.responseBody == null || r.responseBody === '') { body.innerHTML = '<span style="color:var(--text-dim)">Empty response body</span>'; return; }
     if (isErrStatus) {
       const errBanner = document.createElement('div');
       errBanner.style.cssText = 'color:var(--red);font-weight:600;padding:4px 0 8px;font-size:11px;border-bottom:1px solid rgba(255,94,114,.15);margin-bottom:8px';

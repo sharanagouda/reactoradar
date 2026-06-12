@@ -401,7 +401,8 @@ function primitivePreview(val) {
   if (typeof val === 'number' || typeof val === 'boolean') return String(val);
   if (Array.isArray(val)) return `Array(${val.length})`;
   if (typeof val === 'object') return `{...}`;
-  return String(val);
+  if (typeof val === 'function') return `[Function: ${val.name || 'anonymous'}]`;
+  return safeStr(val);
 }
 
 function createTreeNode(key, val, startCollapsed) {
@@ -505,7 +506,7 @@ function _safeStr(val) {
   if (val === undefined) return 'undefined';
   if (typeof val === 'string') return val;
   if (typeof val === 'number' || typeof val === 'boolean') return String(val);
-  try { return JSON.stringify(val, null, 2); } catch { return String(val); }
+  try { return JSON.stringify(val, null, 2); } catch { return '[Complex object]'; }
 }
 
 function createPrimitiveSpan(val) {
@@ -561,7 +562,7 @@ function buildLogBody(logEntry) {
     });
   } else if (logEntry.message != null) {
     // Legacy / flat message — try to parse JSON objects out of it
-    const msg = String(logEntry.message);
+    const msg = safeStr(logEntry.message);
     // Try parsing the whole message as JSON
     try {
       const parsed = JSON.parse(msg);
@@ -691,7 +692,7 @@ function buildLogRow(l) {
       items.push({ label: 'Copy as JSON', action: () => {
         const json = l.args.map(a => {
           if (a.t === 'object' || a.t === 'array') return JSON.stringify(a.v, null, 2);
-          return String(a.v);
+          return safeStr(a.v);
         }).join(' ');
         navigator.clipboard.writeText(json);
       }});
