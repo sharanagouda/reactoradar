@@ -47,21 +47,32 @@ if (window.electronAPI) {
 
   window.electronAPI.on('clear-all-ui', clearAll);
 
-  // When all device bridges disconnect, release heavy memory but keep logs visible.
-  // Debounced to avoid data loss during hot reloads or flaky connections.
+  // Device disconnect → debounced freeMemory. Reconnect → clearAll (fresh session).
   let _disconnectTimer = null;
+  let _wasDisconnected = false;
+
   window.electronAPI.on('device-all-disconnected', () => {
+    _wasDisconnected = true;
     clearTimeout(_disconnectTimer);
     _disconnectTimer = setTimeout(() => {
       console.log('[App] All devices disconnected — freeing memory');
       freeMemory();
     }, 3000);
   });
-  // Cancel pending free if a device reconnects
-  const _cancelDisconnectTimer = () => { clearTimeout(_disconnectTimer); _disconnectTimer = null; };
-  window.electronAPI.on('redux-connected', on => { if (on) _cancelDisconnectTimer(); updateDeviceBanner('redux', on); });
-  window.electronAPI.on('network-connected', on => { if (on) _cancelDisconnectTimer(); updateDeviceBanner('network', on); });
-  window.electronAPI.on('storage-connected', on => { if (on) _cancelDisconnectTimer(); updateDeviceBanner('storage', on); });
+
+  const _handleReconnect = () => {
+    clearTimeout(_disconnectTimer);
+    _disconnectTimer = null;
+    if (_wasDisconnected) {
+      _wasDisconnected = false;
+      console.log('[App] Device reconnected — clearing old session data');
+      clearAll();
+    }
+  };
+
+  window.electronAPI.on('redux-connected', on => { if (on) _handleReconnect(); updateDeviceBanner('redux', on); });
+  window.electronAPI.on('network-connected', on => { if (on) _handleReconnect(); updateDeviceBanner('network', on); });
+  window.electronAPI.on('storage-connected', on => { if (on) _handleReconnect(); updateDeviceBanner('storage', on); });
   window.electronAPI.on('react-dt-status', on => { updateDeviceBanner('reactDT', on); });
 
   // Cmd+F — focus the search input for the active panel
