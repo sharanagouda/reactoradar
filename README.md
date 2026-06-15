@@ -53,6 +53,17 @@
 | **React** | Component tree and props inspector via `react-devtools-core` relay |
 | **Settings** | 9 color themes, font family/size, configurable panel visibility with drag-to-reorder, Metro port config, keyboard shortcuts, auto-update, support link |
 
+### What's New in v1.6.11
+
+- **Auto-clear on reconnect** — All tabs reset automatically when the RN app relaunches (fresh session, no stale data)
+- **No more `[object Object]`** — Safe string serialization everywhere in Console, Network, and Redux panels
+- **SDK auto-detects platform** — Android emulator (`10.0.2.2`) and iOS simulator (`127.0.0.1`) detected at runtime. No manual HOST editing.
+- **Setup auto-patches legacy `createStore`** — Detects `const middleware = []` pattern and wires `reduxMiddleware` automatically
+- **SDK hardened** — BigInt/circular-safe JSON, Redux state >1MB truncated, binary response guard, reconnect backoff, console try/catch
+- **Version rollback** — Settings > Version History shows all releases with download/install buttons
+- **Panel-per-file architecture** — Each panel in its own file under `panels/`. Safer, easier to maintain.
+- **Null guards everywhere** — All panel init functions, badge updates, and DOM access null-safe
+
 ### What's New in v1.6.0
 
 - **Auto-Update** — `.dmg` builds auto-download updates from GitHub Releases. Settings shows "Restart & Update" when ready.
@@ -134,7 +145,7 @@ Console, Network, Redux, GA4, AsyncStorage data flows automatically. No config n
 | Android real device (USB) | `10.0.2.2` | `adb reverse` tunnels over USB (auto-configured) |
 | iOS real device (USB/WiFi) | Mac's LAN IP | Auto-detected. Device must be on same WiFi as Mac. |
 
-`npx reactoradar setup` auto-detects your platform and sets the correct HOST.
+The SDK auto-detects the platform at runtime. For iOS real devices, set `HOST_OVERRIDE` in `src/debug/RNDebugSDK.js` to your Mac's LAN IP. `npx reactoradar setup` handles this automatically.
 
 ### Uninstall
 
@@ -146,7 +157,7 @@ npx reactoradar remove
 
 | ReactoRadar | React Native | Engine | Architecture |
 |---|---|---|---|
-| v1.6+ | 0.74 — 0.81+ | Hermes | Old & New Architecture |
+| v1.6.11+ | 0.74 — 0.81+ | Hermes | Old & New Architecture |
 
 ## Network Inspector
 
@@ -203,13 +214,26 @@ export const store = configureStore({
 });
 ```
 
-**Legacy Redux (createStore):**
+**Legacy Redux (createStore with middleware array):**
+```js
+const middleware = [];
+// ... your existing middleware (saga, thunk, etc.)
+if (__DEV__) {
+  try {
+    const { reduxMiddleware } = require('./debug/RNDebugSDK');
+    if (reduxMiddleware) middleware.push(reduxMiddleware);
+  } catch {}
+}
+const store = createStore(rootReducer, applyMiddleware(...middleware));
+```
+
+**Legacy Redux (createStore without middleware):**
 ```js
 import { reduxEnhancer } from '../debug/RNDebugSDK';
 const store = createStore(reducer, __DEV__ ? reduxEnhancer : undefined);
 ```
 
-> **Note:** The import path is relative from your store file to `src/debug/RNDebugSDK`. Run `npx reactoradar setup` to auto-detect the correct path.
+> **Note:** `npx reactoradar setup` auto-detects your store file and patches it. If it can't, follow the examples above. The import path is relative from your store file to `src/debug/RNDebugSDK`.
 
 ## Settings
 
@@ -293,7 +317,8 @@ const store = createStore(reducer, __DEV__ ? reduxEnhancer : undefined);
 | Network tab empty | Run Metro with `--reset-cache` |
 | Blank screen after long use | Click "Clear All Data" on the memory warning banner, or restart the app |
 | Redux shows "No actions dispatched" | Verify `reduxMiddleware` is wired in your store. Run `npx reactoradar setup` to auto-detect. |
-| Real device not connecting | Ensure HOST in `src/debug/RNDebugSDK.js` matches your Mac's LAN IP. Re-run `npx reactoradar setup`. |
+| Android emulator not connecting | Run `adb reverse tcp:9090 tcp:9090 && adb reverse tcp:9091 tcp:9091 && adb reverse tcp:9092 tcp:9092`. Re-run after emulator restart. |
+| Real device not connecting | Set `HOST_OVERRIDE` in `src/debug/RNDebugSDK.js` to your Mac's LAN IP. Re-run `npx reactoradar setup`. |
 | `XHRInterceptor.js` warning | Set `networking: false` in ReactotronConfig.js |
 | GA4 events not showing | Restart Metro with `--reset-cache` after setup |
 | Port conflict | Run `kill $(lsof -ti :9092)` to free the port, then restart |
