@@ -383,30 +383,9 @@ ${SDK_MARKER_END}
          } else {
            log('Redux store already has RNDebugSDK wired correctly — skipping');
          }
-       } else if (storeContent.includes('configureStore')) {
-         // RTK configureStore
-         // Try to add middleware to configureStore
-         if (storeContent.includes('middleware:') || storeContent.includes('middleware :')) {
-           warn('Redux store found at', C.bold + storeFile + C.reset, '— has custom middleware');
-           console.log(C.dim + '    Add manually to your middleware:' + C.reset);
-           console.log(C.dim + `      import { reduxMiddleware } from '${relSDK}';` + C.reset);
-           console.log(C.dim + '      middleware: (getDefault) => __DEV__' + C.reset);
-           console.log(C.dim + '        ? getDefault().concat(reduxMiddleware)' + C.reset);
-           console.log(C.dim + '        : getDefault(),' + C.reset);
-         } else {
-           // Add middleware field to configureStore
-           const patched = storeContent.replace(
-             /(configureStore\s*\(\s*\{)/,
-             `$1\n  middleware: (getDefaultMiddleware) =>\n    __DEV__\n      ? getDefaultMiddleware().concat(require('${relSDK}').reduxMiddleware)\n      : getDefaultMiddleware(),`
-           );
-           if (patched !== storeContent) {
-             fs.writeFileSync(storePath, patched);
-             log('Patched', C.bold + storeFile + C.reset, '— Redux middleware wired');
-           } else {
-             warn('Could not auto-patch', storeFile, '— wire Redux manually');
-           }
-         }
-        } else if (storeContent.includes('createStore')) {
+        } else if (/createStore\s*\(/.test(storeContent)) {
+          // Legacy createStore (check this BEFORE configureStore — a file may have both
+          // if the user named their wrapper function "configureStore" but uses Redux's createStore inside)
           // Legacy createStore — try to auto-patch by adding reduxMiddleware to middleware array
           let patched = storeContent;
           let didPatch = false;
@@ -449,9 +428,30 @@ ${SDK_MARKER_END}
             console.log(C.dim + '    Could not auto-patch. Add manually:' + C.reset);
             console.log(C.dim + `      if (__DEV__) { try { const { reduxMiddleware } = require('${relSDK}'); middleware.push(reduxMiddleware); } catch {} }` + C.reset);
             console.log(C.dim + '    Add this BEFORE the createStore() call in your middleware setup.' + C.reset);
+           }
+         } else if (/configureStore\s*\(\s*\{/.test(storeContent)) {
+          // RTK configureStore({ ... }) — actual Redux Toolkit usage
+          if (storeContent.includes('middleware:') || storeContent.includes('middleware :')) {
+            warn('Redux store found at', C.bold + storeFile + C.reset, '— has custom middleware');
+            console.log(C.dim + '    Add manually to your middleware:' + C.reset);
+            console.log(C.dim + `      import { reduxMiddleware } from '${relSDK}';` + C.reset);
+            console.log(C.dim + '      middleware: (getDefault) => __DEV__' + C.reset);
+            console.log(C.dim + '        ? getDefault().concat(reduxMiddleware)' + C.reset);
+            console.log(C.dim + '        : getDefault(),' + C.reset);
+          } else {
+            const patched = storeContent.replace(
+              /(configureStore\s*\(\s*\{)/,
+              `$1\n  middleware: (getDefaultMiddleware) =>\n    __DEV__\n      ? getDefaultMiddleware().concat(require('${relSDK}').reduxMiddleware)\n      : getDefaultMiddleware(),`
+            );
+            if (patched !== storeContent) {
+              fs.writeFileSync(storePath, patched);
+              log('Patched', C.bold + storeFile + C.reset, '— Redux middleware wired (RTK)');
+            } else {
+              warn('Could not auto-patch', storeFile, '— wire Redux manually');
+            }
           }
-        }
-     } else {
+         }
+      } else {
        warn('Redux detected but store file not found automatically');
        console.log(C.dim + '    Add to your store setup:' + C.reset);
        console.log(C.dim + '      import { reduxMiddleware } from \'./src/debug/RNDebugSDK\';' + C.reset);
