@@ -739,7 +739,8 @@ function setupIPC() {
     if (platform === 'android') {
       // adb logcat — show only new logs from now (not historical buffer)
       cmd = 'adb';
-      args = ['logcat', '-v', 'threadtime', '-T', '1', '*:W']; // -T 1 = last 1 line then real-time
+      // -T 1 = last 1 line then real-time. Include Firebase tags at Verbose level for GA4 event capture.
+      args = ['logcat', '-v', 'threadtime', '-T', '1', 'FA:V', 'FA-SVC:V', 'FirebaseAnalytics:V', '*:W'];
     } else if (platform === 'ios-sim') {
       // xcrun simctl for iOS Simulator — use syslog style for parseable output
       cmd = 'xcrun';
@@ -808,13 +809,50 @@ function setupIPC() {
     if (_nativeLogProcess) { try { _nativeLogProcess.kill(); } catch {} }
   });
 
+  // Firebase/GA tag detection for both Android and iOS
+  const _firebaseTags = new Set(['FA', 'FA-SVC', 'FA:Application', 'FA:Service', 'FirebaseAnalytics', 'FIRAnalytics', 'firebase', 'google.analytics', 'AnalyticsService']);
+  const _firebaseTagRe = /^(FA|FA-SVC|FA:Application|FA:Service|FirebaseAnalytics|FIRAnalytics|firebase|google\.analytics|AnalyticsService)/i;
+
+  function _parseFirebaseEvent(message, tag) {
+    if (!message) return null;
+    // Android FA tag patterns:
+    // "Logging event (FE): session_start(_s), Bundle[{...}]"
+    // "Setting event parameter: engagement_time_msec = 1234"
+    // "Screen exposed: main_screen"
+    let m;
+    if ((m = message.match(/Logging event\s*\(?(\w+)?\)?\s*:\s*(\S+?)(?:\((\w+)\))?\s*,?\s*Bundle\[\{(.*)\}\]/i))) {
+      const params = {};
+      // Parse "key=value, key=value" from Bundle
+      if (m[4]) m[4].split(/,\s*/).forEach(p => { const [k, v] = p.split('='); if (k) params[k.trim()] = v ? v.trim() : ''; });
+      return { eventName: m[2] || m[3] || 'unknown', source: m[1] || 'native', params };
+    }
+    if ((m = message.match(/Logging event\s*\(?(\w+)?\)?\s*:\s*(\S+)/i))) {
+      return { eventName: m[2], source: m[1] || 'native', params: {} };
+    }
+    // iOS FIRAnalytics pattern: "Logging event: origin, name, params: { ... }"
+    if ((m = message.match(/Logging event:\s*(\w+),\s*(\w+),\s*params:\s*(\{.*\})/i))) {
+      let params = {};
+      try { params = JSON.parse(m[3]); } catch {}
+      return { eventName: m[2], source: m[1] || 'native', params };
+    }
+    return null;
+  }
+
   function _parseNativeLog(line, platform) {
     if (platform === 'android') {
       // Android logcat format: "06-05 10:30:45.123  1234  5678 E TAG: message"
       const m = line.match(/^\d{2}-\d{2}\s+(\d{2}:\d{2}:\d{2})\.\d+\s+\d+\s+\d+\s+([VDIWEF])\s+([^:]+):\s*(.*)/);
       if (m) {
         const levelMap = { V: 'verbose', D: 'debug', I: 'info', W: 'warn', E: 'error', F: 'fatal' };
-        return { ts: Date.now(), time: m[1], level: levelMap[m[2]] || 'info', tag: m[3].trim(), message: m[4], raw: line };
+        const tag = m[3].trim();
+        const parsed = { ts: Date.now(), time: m[1], level: levelMap[m[2]] || 'info', tag, message: m[4], raw: line };
+        // Detect Firebase/GA events
+        if (_firebaseTagRe.test(tag)) {
+          parsed.firebase = true;
+          const fe = _parseFirebaseEvent(m[4], tag);
+          if (fe) parsed.firebaseEvent = fe;
+        }
+        return parsed;
       }
       return { ts: Date.now(), level: 'info', message: line, raw: line };
     }
@@ -823,13 +861,25 @@ function setupIPC() {
       const m1 = line.match(/(\d{2}:\d{2}:\d{2})\.\d+[^\s]*\s+\S+\s+(\S+)\[\d+\].*?<(\w+)>:\s*(.*)/);
       if (m1) {
         const levelMap = { Notice: 'info', Info: 'info', Default: 'info', Debug: 'debug', Error: 'error', Fault: 'fatal' };
-        return { ts: Date.now(), time: m1[1], level: levelMap[m1[3]] || 'info', tag: m1[2], message: m1[4], raw: line };
+        const parsed = { ts: Date.now(), time: m1[1], level: levelMap[m1[3]] || 'info', tag: m1[2], message: m1[4], raw: line };
+        if (_firebaseTagRe.test(m1[2]) || /FIRAnalytics|GoogleAnalytics|firebase/i.test(m1[4])) {
+          parsed.firebase = true;
+          const fe = _parseFirebaseEvent(m1[4], m1[2]);
+          if (fe) parsed.firebaseEvent = fe;
+        }
+        return parsed;
       }
       // idevicesyslog format: "Jun  5 10:30:45 iPhone MyApp(libsystem)[123] <Error>: message"
       const m2 = line.match(/\w+\s+\d+\s+(\d{2}:\d{2}:\d{2})\s+\S+\s+(\S+?)[\[(].*?<(\w+)>:\s*(.*)/);
       if (m2) {
         const levelMap = { Notice: 'info', Info: 'info', Debug: 'debug', Warning: 'warn', Error: 'error', Critical: 'fatal' };
-        return { ts: Date.now(), time: m2[1], level: levelMap[m2[3]] || 'info', tag: m2[2], message: m2[4], raw: line };
+        const parsed = { ts: Date.now(), time: m2[1], level: levelMap[m2[3]] || 'info', tag: m2[2], message: m2[4], raw: line };
+        if (_firebaseTagRe.test(m2[2]) || /FIRAnalytics|GoogleAnalytics|firebase/i.test(m2[4])) {
+          parsed.firebase = true;
+          const fe = _parseFirebaseEvent(m2[4], m2[2]);
+          if (fe) parsed.firebaseEvent = fe;
+        }
+        return parsed;
       }
       // Fallback
       const timeMatch = line.match(/(\d{2}:\d{2}:\d{2})/);

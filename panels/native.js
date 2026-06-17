@@ -66,6 +66,7 @@ function initNativeLogsPanel() {
         <input id="nativeSearch" class="net-search-input" placeholder="Filter logs..." />
         <div class="native-level-filters" id="nativeLevelFilters">
           <button class="net-status-btn active" data-level="all">All</button>
+          <button class="net-status-btn" data-level="firebase" style="color:var(--yellow)">🔥 Firebase</button>
           <button class="net-status-btn" data-level="fatal">Fatal</button>
           <button class="net-status-btn" data-level="error">Error</button>
           <button class="net-status-btn" data-level="warn">Warn</button>
@@ -197,51 +198,103 @@ function _appendNativeLog(log) {
   if (!list) return;
 
   // Check filters
-  if (_nativeState.levelFilter !== 'all' && log.level !== _nativeState.levelFilter) return;
+  if (_nativeState.levelFilter === 'firebase') {
+    if (!log.firebase) return; // Only show Firebase-tagged logs
+  } else if (_nativeState.levelFilter !== 'all' && log.level !== _nativeState.levelFilter) {
+    return;
+  }
   if (_nativeState.searchFilter && !log.message?.toLowerCase().includes(_nativeState.searchFilter) && !log.tag?.toLowerCase().includes(_nativeState.searchFilter)) return;
-
-  const isExpandable = log.level === 'error' || log.level === 'fatal' || (log.message || '').length > 200;
-  const row = document.createElement('div');
-  row.className = `native-log-row native-${log.level || 'info'}`;
 
   const time = log.time || new Date(log.ts).toLocaleTimeString('en', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
-  // Header line (always visible)
-  const header = document.createElement('div');
-  header.className = 'native-log-header';
-  header.innerHTML = `<span class="native-log-time">${esc(time)}</span>`
-    + `<span class="native-log-level">${esc((log.level || 'info').toUpperCase())}</span>`
-    + (log.tag ? `<span class="native-log-tag">${esc(log.tag)}</span>` : '')
-    + `<span class="native-log-preview">${esc((log.message || '').split('\\n')[0].slice(0, 200))}</span>`;
-  row.appendChild(header);
+  // Firebase events — render GA4-style cards
+  if (log.firebase && log.firebaseEvent && _nativeState.levelFilter === 'firebase') {
+    const fe = log.firebaseEvent;
+    const row = document.createElement('div');
+    row.className = 'native-firebase-card';
 
-  // Expandable full message (for errors and long messages)
-  if (isExpandable) {
-    const fullMsg = document.createElement('div');
-    fullMsg.className = 'native-log-full';
-    fullMsg.style.display = 'none';
-    fullMsg.textContent = log.message || '';
-    row.appendChild(fullMsg);
+    const paramKeys = Object.keys(fe.params || {});
+    const paramHtml = paramKeys.length > 0
+      ? `<div class="native-firebase-params">${paramKeys.map(k =>
+          `<div class="native-firebase-param"><span class="native-firebase-param-key">${esc(k)}</span><span class="native-firebase-param-val">${esc(safeStr(fe.params[k]))}</span></div>`
+        ).join('')}</div>`
+      : '';
 
-    header.style.cursor = 'pointer';
-    header.addEventListener('click', () => {
-      const open = fullMsg.style.display !== 'none';
-      fullMsg.style.display = open ? 'none' : 'block';
-      row.classList.toggle('expanded', !open);
+    row.innerHTML = `
+      <div class="native-firebase-header">
+        <span class="native-firebase-event">${esc(fe.eventName)}</span>
+        <span class="native-firebase-source">${esc(fe.source)}</span>
+        <span class="native-firebase-time">${esc(time)}</span>
+      </div>
+      ${paramHtml}`;
+
+    // Expand/collapse params
+    const header = row.querySelector('.native-firebase-header');
+    const params = row.querySelector('.native-firebase-params');
+    if (header && params) {
+      params.style.display = 'none';
+      header.style.cursor = 'pointer';
+      header.addEventListener('click', () => {
+        const open = params.style.display !== 'none';
+        params.style.display = open ? 'none' : 'block';
+        row.classList.toggle('expanded', !open);
+      });
+    }
+
+    // Right-click
+    row.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      showContextMenu(e, [
+        { label: `Copy Event: ${fe.eventName}`, action: () => navigator.clipboard.writeText(fe.eventName) },
+        { label: 'Copy Params (JSON)', action: () => navigator.clipboard.writeText(JSON.stringify(fe.params, null, 2)) },
+        { label: 'Copy Raw Log', action: () => navigator.clipboard.writeText(log.raw || log.message || '') },
+      ]);
     });
+
+    list.appendChild(row);
+  } else {
+    // Standard log row — with Firebase badge if applicable
+    const isExpandable = log.level === 'error' || log.level === 'fatal' || (log.message || '').length > 200;
+    const row = document.createElement('div');
+    row.className = `native-log-row native-${log.level || 'info'}${log.firebase ? ' native-firebase' : ''}`;
+
+    const header = document.createElement('div');
+    header.className = 'native-log-header';
+    header.innerHTML = `<span class="native-log-time">${esc(time)}</span>`
+      + `<span class="native-log-level">${esc((log.level || 'info').toUpperCase())}</span>`
+      + (log.firebase ? '<span class="native-firebase-badge">Firebase</span>' : '')
+      + (log.tag ? `<span class="native-log-tag">${esc(log.tag)}</span>` : '')
+      + `<span class="native-log-preview">${esc((log.message || '').split('\\n')[0].slice(0, 200))}</span>`;
+    row.appendChild(header);
+
+    if (isExpandable) {
+      const fullMsg = document.createElement('div');
+      fullMsg.className = 'native-log-full';
+      fullMsg.style.display = 'none';
+      fullMsg.textContent = log.message || '';
+      row.appendChild(fullMsg);
+
+      header.style.cursor = 'pointer';
+      header.addEventListener('click', () => {
+        const open = fullMsg.style.display !== 'none';
+        fullMsg.style.display = open ? 'none' : 'block';
+        row.classList.toggle('expanded', !open);
+      });
+    }
+
+    row.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      const items = [
+        { label: 'Copy Message', action: () => navigator.clipboard.writeText(log.message || '') },
+        { label: 'Copy Raw Line', action: () => navigator.clipboard.writeText(log.raw || log.message || '') },
+      ];
+      if (log.tag) items.push({ label: `Copy Tag (${log.tag})`, action: () => navigator.clipboard.writeText(log.tag) });
+      if (log.firebaseEvent) items.push({ label: `Copy Event: ${log.firebaseEvent.eventName}`, action: () => navigator.clipboard.writeText(log.firebaseEvent.eventName) });
+      showContextMenu(e, items);
+    });
+
+    list.appendChild(row);
   }
-
-  // Right-click to copy
-  row.addEventListener('contextmenu', (e) => {
-    e.preventDefault();
-    showContextMenu(e, [
-      { label: 'Copy Message', action: () => navigator.clipboard.writeText(log.message || '') },
-      { label: 'Copy Raw Line', action: () => navigator.clipboard.writeText(log.raw || log.message || '') },
-      ...(log.tag ? [{ label: `Copy Tag (${log.tag})`, action: () => navigator.clipboard.writeText(log.tag) }] : []),
-    ]);
-  });
-
-  list.appendChild(row);
 
   // Cap DOM rows
   while (list.children.length > 1000) list.firstChild.remove();
