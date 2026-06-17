@@ -743,8 +743,11 @@ function setupIPC() {
       args = ['logcat', '-v', 'threadtime', '-T', '1', 'FA:V', 'FA-SVC:V', 'FirebaseAnalytics:V', '*:W'];
     } else if (platform === 'ios-sim') {
       // xcrun simctl for iOS Simulator — use syslog style for parseable output
+      // --level info captures Firebase/FIRAnalytics events (they log at info/debug level)
+      // --predicate filters to errors + Firebase to avoid log flood
       cmd = 'xcrun';
-      args = ['simctl', 'spawn', 'booted', 'log', 'stream', '--style', 'syslog', '--level', 'error'];
+      args = ['simctl', 'spawn', 'booted', 'log', 'stream', '--style', 'syslog',
+        '--predicate', 'messageType >= error OR subsystem CONTAINS "firebase" OR subsystem CONTAINS "FIRAnalytics" OR category CONTAINS "Firebase"'];
     } else if (platform === 'ios-device') {
       // idevicesyslog for real iOS device
       cmd = 'idevicesyslog';
