@@ -742,12 +742,12 @@ function setupIPC() {
       // -T 1 = last 1 line then real-time. Include Firebase tags at Verbose level for GA4 event capture.
       args = ['logcat', '-v', 'threadtime', '-T', '1', 'FA:V', 'FA-SVC:V', 'FirebaseAnalytics:V', '*:W'];
     } else if (platform === 'ios-sim') {
-      // xcrun simctl for iOS Simulator — use syslog style for parseable output
-      // --level info captures Firebase/FIRAnalytics events (they log at info/debug level)
-      // --predicate filters to errors + Firebase to avoid log flood
-      cmd = 'xcrun';
-      args = ['simctl', 'spawn', 'booted', 'log', 'stream', '--style', 'syslog',
-        '--predicate', 'messageType >= error OR subsystem CONTAINS "firebase" OR subsystem CONTAINS "FIRAnalytics" OR category CONTAINS "Firebase"'];
+      // Use macOS unified log to capture iOS simulator logs
+      // processImagePath CONTAINS "CoreSimulator" filters to simulator processes only
+      // Captures errors + Firebase/FIRAnalytics events (requires -FIRDebugEnabled in Xcode scheme)
+      cmd = '/usr/bin/log';
+      args = ['stream', '--style', 'syslog', '--predicate',
+        'processImagePath CONTAINS "CoreSimulator" AND (messageType >= error OR composedMessage CONTAINS "firebase" OR composedMessage CONTAINS "FIRAnalytics" OR composedMessage CONTAINS "Logging event" OR composedMessage CONTAINS "GoogleAnalytics" OR composedMessage CONTAINS "[GA4]")'];
     } else if (platform === 'ios-device') {
       // idevicesyslog for real iOS device
       cmd = 'idevicesyslog';

@@ -36,6 +36,8 @@ function initNativeLogsPanel() {
               <div class="native-prereq-step">2. Enable <b>USB Debugging</b><br/><span style="color:var(--text-dim);font-size:9px">Settings → Developer Options → USB Debugging → ON</span></div>
               <div class="native-prereq-step">3. Connect device via USB and accept the prompt</div>
               <div class="native-prereq-step">4. Verify: run <code>adb devices</code> in terminal</div>
+              <div class="native-prereq-step" style="margin-top:6px"><b>Firebase events:</b></div>
+              <div class="native-prereq-step"><code>adb shell setprop debug.firebase.analytics.app &lt;pkg&gt;</code></div>
             </div>
             <div id="nativeAndroidStatus" class="native-detect-status"></div>
             <button class="native-connect-btn" id="nativeConnectAndroid">Connect Android</button>
@@ -51,6 +53,8 @@ function initNativeLogsPanel() {
               <div class="native-prereq-step">1. Install: <code>brew install libimobiledevice</code></div>
               <div class="native-prereq-step">2. Connect device, tap <b>Trust</b> on the prompt</div>
               <div class="native-prereq-step">3. Verify: <code>idevice_id -l</code> shows device UDID</div>
+              <div class="native-prereq-step" style="margin-top:6px"><b>Firebase events:</b></div>
+              <div class="native-prereq-step">Add <code>-FIRDebugEnabled</code> to Xcode scheme launch arguments</div>
             </div>
             <div id="nativeIOSStatus" class="native-detect-status"></div>
             <div style="display:flex;gap:6px;margin-top:8px">
