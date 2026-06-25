@@ -411,9 +411,13 @@ function primitivePreview(val) {
   return safeStr(val);
 }
 
-function createTreeNode(key, val, startCollapsed) {
+function createTreeNode(key, val, startCollapsed, parentPath) {
   const isArray = Array.isArray(val);
   const isObj = val !== null && typeof val === 'object';
+  // Build full dot-notation path for "Copy path"
+  const fullPath = key !== null
+    ? (parentPath ? (typeof key === 'number' ? `${parentPath}[${key}]` : `${parentPath}.${key}`) : String(key))
+    : (parentPath || '');
 
   if (!isObj) {
     // Primitive leaf
@@ -433,6 +437,7 @@ function createTreeNode(key, val, startCollapsed) {
       const items = [];
       if (key !== null) items.push({ label: `Copy value of "${key}"`, action: () => navigator.clipboard.writeText(safeStr(val)) });
       items.push({ label: 'Copy as JSON', action: () => { try { navigator.clipboard.writeText(JSON.stringify(val)); } catch { navigator.clipboard.writeText(safeStr(val)); } } });
+      if (fullPath) items.push({ label: 'Copy path', action: () => navigator.clipboard.writeText(fullPath) });
       showContextMenu(e, items);
     });
     return row;
@@ -475,7 +480,7 @@ function createTreeNode(key, val, startCollapsed) {
     populated = true;
     const entries = collectEntries(val);
     entries.forEach(([k, v]) => {
-      children.appendChild(createTreeNode(k, v, true));
+      children.appendChild(createTreeNode(k, v, true, fullPath));
     });
     // For arrays show length, for objects show prototype hint
     if (isArray) {
@@ -528,7 +533,7 @@ function createTreeNode(key, val, startCollapsed) {
     items.push({ label: 'Copy entire object', action: () => {
       try { navigator.clipboard.writeText(JSON.stringify(val, null, 2)); } catch { navigator.clipboard.writeText(safeStr(val)); }
     }});
-    items.push({ label: 'Copy path', action: () => navigator.clipboard.writeText(key !== null ? String(key) : '') });
+    if (fullPath) items.push({ label: 'Copy path', action: () => navigator.clipboard.writeText(fullPath) });
     showContextMenu(e, items);
   });
 
