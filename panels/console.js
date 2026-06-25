@@ -401,7 +401,12 @@ function primitivePreview(val) {
   if (typeof val === 'string') return val.length > 50 ? `"${val.slice(0,50)}..."` : `"${val}"`;
   if (typeof val === 'number' || typeof val === 'boolean') return String(val);
   if (Array.isArray(val)) return `Array(${val.length})`;
-  if (typeof val === 'object') return `{...}`;
+  if (typeof val === 'object') {
+    const keys = Object.keys(val);
+    if (keys.length === 0) return '{}';
+    if (keys.length <= 3) return `{${keys.join(', ')}}`;
+    return `{${keys.slice(0, 3).join(', ')}, +${keys.length - 3}}`;
+  }
   if (typeof val === 'function') return `[Function: ${val.name || 'anonymous'}]`;
   return safeStr(val);
 }
