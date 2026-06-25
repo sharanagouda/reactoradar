@@ -71,10 +71,25 @@ function syntaxHighlight(json) {
     });
 }
 
+// Sort object keys alphabetically for display (recursive)
+function _sortKeys(obj) {
+  if (Array.isArray(obj)) return obj.map(_sortKeys);
+  if (obj !== null && typeof obj === 'object') {
+    const sorted = {};
+    Object.keys(obj).sort().forEach(k => { sorted[k] = _sortKeys(obj[k]); });
+    return sorted;
+  }
+  return obj;
+}
+
 function renderJSON(val) {
   if (val == null) return '<span style="color:var(--text-dim)">Empty response</span>';
   try {
-    const str = typeof val === 'string' ? val : JSON.stringify(val, null, 2);
+    let data = val;
+    // Parse string JSON so we can sort keys
+    if (typeof data === 'string') { try { data = JSON.parse(data); } catch { return syntaxHighlight(esc(data)); } }
+    const sorted = _sortKeys(data);
+    const str = JSON.stringify(sorted, null, 2);
     if (!str || str === '{}' || str === '""') return '<span style="color:var(--text-dim)">Empty response body</span>';
     return syntaxHighlight(esc(str));
   } catch { try { return esc(JSON.stringify(val)); } catch { return esc('[Unserializable data]'); } }

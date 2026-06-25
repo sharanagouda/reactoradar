@@ -82,7 +82,7 @@ function _findLeafChanges(oldVal, newVal, basePath, maxDepth) {
       changes.push({ path, oldVal: a, newVal: b });
       return;
     }
-    const allKeys = new Set([...Object.keys(a), ...Object.keys(b)]);
+    const allKeys = [...new Set([...Object.keys(a), ...Object.keys(b)])].sort();
     allKeys.forEach(k => {
       if (!_deepEqual(a[k], b[k])) {
         const childPath = path ? `${path}.${k}` : k;
@@ -169,7 +169,7 @@ function _createHighlightedTree(key, val, changedPaths, currentPath, isOld) {
   function populate() {
     if (populated) return;
     populated = true;
-    const entries = isArray ? val.map((v, i) => [i, v]) : Object.entries(val);
+    const entries = isArray ? val.map((v, i) => [i, v]) : Object.entries(val).sort((a, b) => String(a[0]).localeCompare(String(b[0])));
     entries.forEach(([k, v]) => {
       children.appendChild(_createHighlightedTree(k, v, changedPaths, myPath, isOld));
     });
@@ -197,7 +197,7 @@ function handleReduxEvent(event) {
   const prevState = state.redux.states.length > 0 ? state.redux.states[state.redux.states.length - 1] : null;
   const changedKeys = [];
   if (prevState && nextState && typeof prevState === 'object' && typeof nextState === 'object') {
-    const allKeys = new Set([...Object.keys(prevState), ...Object.keys(nextState)]);
+    const allKeys = [...new Set([...Object.keys(prevState), ...Object.keys(nextState)])].sort();
     allKeys.forEach(k => { if (!_deepEqual(prevState[k], nextState[k])) changedKeys.push(k); });
   }
 
