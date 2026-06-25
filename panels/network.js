@@ -929,13 +929,13 @@ function renderNetDetailContent(r) {
       items.push({ label: 'Copy Response Object', action: () => {
         try {
           const data = typeof r.responseBody === 'string' ? JSON.parse(r.responseBody) : r.responseBody;
-          navigator.clipboard.writeText(JSON.stringify(data, null, 2));
+          navigator.clipboard.writeText(JSON.stringify(_sortKeys(data), null, 2));
         } catch { navigator.clipboard.writeText(safeStr(r.responseBody)); }
       }});
       items.push({ label: 'Copy Response (minified)', action: () => {
         try {
           const data = typeof r.responseBody === 'string' ? JSON.parse(r.responseBody) : r.responseBody;
-          navigator.clipboard.writeText(JSON.stringify(data));
+          navigator.clipboard.writeText(JSON.stringify(_sortKeys(data)));
         } catch { navigator.clipboard.writeText(safeStr(r.responseBody)); }
       }});
       showContextMenu(e, items);
@@ -966,7 +966,7 @@ function showNetContextMenu(e, r) {
 
 function showPreviewCopyMenu(e, fullData) {
   const items = [
-    { label: 'Copy Object', action: () => navigator.clipboard.writeText(JSON.stringify(fullData, null, 2)) },
+    { label: 'Copy Object', action: () => navigator.clipboard.writeText(JSON.stringify(_sortKeys(fullData), null, 2)) },
   ];
   const sel = window.getSelection();
   if (sel && sel.toString().length > 0) {
