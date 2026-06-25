@@ -918,6 +918,28 @@ function renderNetDetailContent(r) {
     } else {
       body.innerHTML = renderJSON(r.responseBody);
     }
+    // Right-click to copy response object
+    body.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      const sel = window.getSelection();
+      const items = [];
+      if (sel && sel.toString().length > 0) {
+        items.push({ label: 'Copy Selection', action: () => navigator.clipboard.writeText(sel.toString()) });
+      }
+      items.push({ label: 'Copy Response Object', action: () => {
+        try {
+          const data = typeof r.responseBody === 'string' ? JSON.parse(r.responseBody) : r.responseBody;
+          navigator.clipboard.writeText(JSON.stringify(data, null, 2));
+        } catch { navigator.clipboard.writeText(safeStr(r.responseBody)); }
+      }});
+      items.push({ label: 'Copy Response (minified)', action: () => {
+        try {
+          const data = typeof r.responseBody === 'string' ? JSON.parse(r.responseBody) : r.responseBody;
+          navigator.clipboard.writeText(JSON.stringify(data));
+        } catch { navigator.clipboard.writeText(safeStr(r.responseBody)); }
+      }});
+      showContextMenu(e, items);
+    });
   }
 }
 
