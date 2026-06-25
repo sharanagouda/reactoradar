@@ -359,7 +359,8 @@ function collectEntries(val) {
     if (!(k in result)) result[k] = val[k];
   }
 
-  return Object.entries(result);
+  // Sort keys alphabetically for consistent, readable display
+  return Object.entries(result).sort((a, b) => String(a[0]).localeCompare(String(b[0])));
 }
 
 function objPreview(val, maxLen) {
@@ -420,6 +421,15 @@ function createTreeNode(key, val, startCollapsed) {
       row.appendChild(k);
     }
     row.appendChild(createPrimitiveSpan(val));
+    // Right-click to copy value
+    row.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const items = [];
+      if (key !== null) items.push({ label: `Copy value of "${key}"`, action: () => navigator.clipboard.writeText(safeStr(val)) });
+      items.push({ label: 'Copy as JSON', action: () => { try { navigator.clipboard.writeText(JSON.stringify(val)); } catch { navigator.clipboard.writeText(safeStr(val)); } } });
+      showContextMenu(e, items);
+    });
     return row;
   }
 
@@ -495,6 +505,26 @@ function createTreeNode(key, val, startCollapsed) {
       arrow.classList.remove('expanded');
       preview.style.display = '';
     }
+  });
+
+  // Right-click on any node to copy its subtree
+  header.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const items = [];
+    if (key !== null) {
+      items.push({ label: `Copy "${key}" value`, action: () => {
+        try { navigator.clipboard.writeText(JSON.stringify(val, null, 2)); } catch { navigator.clipboard.writeText(safeStr(val)); }
+      }});
+      items.push({ label: `Copy "${key}" key-value`, action: () => {
+        try { navigator.clipboard.writeText(JSON.stringify({ [key]: val }, null, 2)); } catch { navigator.clipboard.writeText(`${key}: ${safeStr(val)}`); }
+      }});
+    }
+    items.push({ label: 'Copy entire object', action: () => {
+      try { navigator.clipboard.writeText(JSON.stringify(val, null, 2)); } catch { navigator.clipboard.writeText(safeStr(val)); }
+    }});
+    items.push({ label: 'Copy path', action: () => navigator.clipboard.writeText(key !== null ? String(key) : '') });
+    showContextMenu(e, items);
   });
 
   container.appendChild(children);
