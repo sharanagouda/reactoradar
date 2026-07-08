@@ -3,7 +3,7 @@
 // GA4 EVENT INSPECTOR
 // ─────────────────────────────────────────────────────────────────────────────
 const ga4State = { events: [], selected: -1, searchFilter: '', sortDir: 'desc', sourceFilter: 'GA4' };
-const _ga4SourceColors = { GA4: '#ffa500', PostHog: '#1d4aff', Branch: '#09b83e', MoEngage: '#00c853', Algolia: '#5468ff', Bloomreach: '#e8236b', GTM: '#4285f4' };
+const _ga4SourceColors = { GA4: '#ffa500', PostHog: '#1d4aff', Branch: '#09b83e', MoEngage: '#00c853', Bloomreach: '#e8236b', GTM: '#4285f4' };
 
 function initGA4Panel() {
   const panel = $('panel-ga4');
@@ -28,7 +28,6 @@ function initGA4Panel() {
       <button class="ga4-source-btn" data-source="PostHog" style="--src-color:#1d4aff">PostHog</button>
       <button class="ga4-source-btn" data-source="Branch" style="--src-color:#09b83e">Branch</button>
       <button class="ga4-source-btn" data-source="MoEngage" style="--src-color:#00c853">MoEngage</button>
-      <button class="ga4-source-btn" data-source="Algolia" style="--src-color:#5468ff">Algolia</button>
     </div>
     <div class="ga4-layout">
       <div class="ga4-list-pane">

@@ -12,7 +12,7 @@ const state = {
     requests: {},
     order: [],
     statusFilter: 'all',
-    typeFilter: 'fetch',
+    typeFilter: 'all',
     searchFilter: '',
     throttle: 'none',
     enabled: true,

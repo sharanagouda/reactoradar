@@ -787,6 +787,48 @@ body {
 .net-status-btn { font-size: 10px; padding: 2px 8px; border-radius: 3px; border: 1px solid var(--border); background: transparent; color: var(--text-dim); cursor: pointer; }
 .net-status-btn:hover { background: var(--bg3); }
 .net-status-btn.active { background: var(--bg4); color: var(--text); border-color: var(--accent); }
+.net-service-filters {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg2);
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+.net-service-filters::before {
+  content: 'Service:';
+  font-size: 9px;
+  color: var(--text-dim);
+  margin-right: 2px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.net-svc-btn {
+  font-size: 10px;
+  padding: 2px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: all 0.15s;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.net-svc-btn:hover {
+  border-color: var(--accent);
+  color: var(--text);
+  background: var(--bg3);
+}
+.net-svc-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
 .net-slow-btn.active { border-color: var(--orange); color: var(--orange); }
 
 /* Stats bar at bottom of network panel */

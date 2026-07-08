@@ -32,8 +32,8 @@ function initNetworkPanel() {
     <div class="net-filter-bar" id="netFilterBar">
       <input id="netSearchInput" class="net-search-input" placeholder="Filter URLs..." />
       <div class="net-type-filters" id="netTypeFilters">
-        <button class="net-type-btn" data-type="all">All</button>
-        <button class="net-type-btn active" data-type="fetch">Fetch/XHR</button>
+        <button class="net-type-btn active" data-type="all">All</button>
+        <button class="net-type-btn" data-type="fetch">Fetch/XHR</button>
         <button class="net-type-btn" data-type="js">JS</button>
         <button class="net-type-btn" data-type="css">CSS</button>
         <button class="net-type-btn" data-type="img">Img</button>
@@ -60,6 +60,17 @@ function initNetworkPanel() {
           <option value="offline">Offline</option>
         </select>
       </div>
+    </div>
+    <div class="net-service-filters" id="netServiceFilters">
+      <button class="net-svc-btn active" data-svc="all">All</button>
+      <button class="net-svc-btn" data-svc="bloomreach">Bloomreach</button>
+      <button class="net-svc-btn" data-svc="monetate">Monetate</button>
+      <button class="net-svc-btn" data-svc="posthog">PostHog</button>
+      <button class="net-svc-btn" data-svc="amplience">Amplience</button>
+      <button class="net-svc-btn" data-svc="algolia">Algolia</button>
+      <button class="net-svc-btn" data-svc="firebase">Firebase</button>
+      <button class="net-svc-btn" data-svc="sentry">Sentry</button>
+      <button class="net-svc-btn" data-svc="media">Media/CDN</button>
     </div>
     <div class="net-layout">
       <div class="net-table-wrap" id="netTableWrap">
@@ -128,6 +139,17 @@ function initNetworkPanel() {
     $('netStatusFilters').querySelectorAll('.net-status-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     state.network.statusFilter = btn.dataset.status;
+    renderNetwork();
+  });
+
+  // Service filter buttons (Bloomreach, Monetate, PostHog, etc.)
+  state.network.serviceFilter = 'all';
+  $('netServiceFilters')?.addEventListener('click', (e) => {
+    const btn = e.target.closest('.net-svc-btn');
+    if (!btn) return;
+    $('netServiceFilters').querySelectorAll('.net-svc-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    state.network.serviceFilter = btn.dataset.svc;
     renderNetwork();
   });
 
@@ -551,13 +573,33 @@ function sortNetworkIds(ids) {
   return sorted;
 }
 
+// ─── Service URL matching ────────────────────────────────────────────────────
+const _netServicePatterns = {
+  bloomreach: /brsrvr\.com|bloomreach|brcdn\.com/i,
+  monetate: /monetate\.net|monetate\.com/i,
+  posthog: /posthog\.com|i\.posthog/i,
+  amplience: /amplience\.net|amplience\.com/i,
+  algolia: /algolia\.io|algolia\.net|algolia\.com/i,
+  firebase: /firebaseio\.com|googleapis\.com\/.*firebase|firebaseinstallations|fcm\.googleapis|crashlytics/i,
+  sentry: /sentry\.io|sentry\.com/i,
+  media: /\.(png|jpg|jpeg|gif|webp|svg|mp4|mp3|woff2?|ttf|eot)(\?|$)|\/images?\//i,
+};
+
+function _matchNetService(url) {
+  if (!url) return 'other';
+  for (const [svc, re] of Object.entries(_netServicePatterns)) {
+    if (re.test(url)) return svc;
+  }
+  return 'other';
+}
+
 // ─── Render network rows ────────────────────────────────────────────────────
 function renderNetwork() {
   const rows = $('netRows');
   const empty = $('networkEmpty');
   if (!rows) return;
 
-  const { statusFilter, typeFilter, searchFilter } = state.network;
+  const { statusFilter, typeFilter, searchFilter, serviceFilter } = state.network;
   const visible = state.network.order.filter(id => {
     const r = state.network.requests[id];
     if (!r) return false;
@@ -566,6 +608,7 @@ function renderNetwork() {
     if (statusFilter === 'slow' && !((r.duration || 0) >= 1000)) return false;
     if (searchFilter && !r.url?.toLowerCase().includes(searchFilter)) return false;
     if (typeFilter !== 'all' && !matchNetType(r, typeFilter)) return false;
+    if (serviceFilter && serviceFilter !== 'all' && _matchNetService(r.url) !== serviceFilter) return false;
     if (isURLHidden(r.url || '')) return false;
     return true;
   });
