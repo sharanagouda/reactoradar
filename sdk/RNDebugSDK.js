@@ -848,6 +848,147 @@ try {
   }, 50);
 })();
 
+// ─── PostHog Interceptor ─────────────────────────────────────────────────────
+(function setupPostHogInterceptor() {
+  function patchPostHog() {
+    try {
+      const posthog = require('posthog-react-native');
+      if (!posthog) return false;
+      const ph = posthog.default || posthog;
+      // PostHog may export a class or singleton
+      const target = typeof ph === 'function' ? ph.prototype : ph;
+      if (!target || target.__reactoRadarPatched) return false;
+
+      const methods = ['capture', 'identify', 'screen', 'alias', 'group', 'register', 'optIn', 'optOut'];
+      methods.forEach(methodName => {
+        if (typeof target[methodName] !== 'function') return;
+        const orig = target[methodName];
+        target[methodName] = function() {
+          try {
+            const name = methodName === 'capture' ? (arguments[0] || methodName) : methodName;
+            const params = methodName === 'capture' ? (arguments[1] || {}) : (arguments[0] || {});
+            try { mainCh.send({ type: 'ga4', name: String(name), params: JSON.parse(JSON.stringify(params)), tag: 'PostHog' }); } catch {}
+          } catch {}
+          return orig.apply(this, arguments);
+        };
+      });
+      target.__reactoRadarPatched = true;
+      _console.log('[RNDebugSDK] PostHog interceptor active');
+      return true;
+    } catch { return false; }
+  }
+  if (!patchPostHog()) { [500, 2000, 5000].forEach(d => setTimeout(patchPostHog, d)); }
+})();
+
+// ─── Branch Interceptor ──────────────────────────────────────────────────────
+(function setupBranchInterceptor() {
+  function patchBranch() {
+    try {
+      const branch = require('react-native-branch');
+      if (!branch) return false;
+      const br = branch.default || branch;
+      if (!br || br.__reactoRadarPatched) return false;
+
+      // Branch.logEvent is a static method
+      const methods = ['logEvent', 'logStandardEvent', 'logCustomEvent'];
+      methods.forEach(methodName => {
+        if (typeof br[methodName] !== 'function') return;
+        const orig = br[methodName];
+        br[methodName] = function() {
+          try {
+            const name = arguments[0] || methodName;
+            const params = arguments[1] || {};
+            try { mainCh.send({ type: 'ga4', name: String(name), params: JSON.parse(JSON.stringify(params)), tag: 'Branch' }); } catch {}
+          } catch {}
+          return orig.apply(this, arguments);
+        };
+      });
+
+      // Also intercept BranchEvent constructor if available
+      if (branch.BranchEvent) {
+        const OrigBE = branch.BranchEvent;
+        const origLogTo = OrigBE.prototype.logTo;
+        if (origLogTo && !OrigBE.prototype.__reactoRadarPatched) {
+          OrigBE.prototype.logTo = function() {
+            try {
+              mainCh.send({ type: 'ga4', name: this._name || 'BranchEvent', params: JSON.parse(JSON.stringify(this._customData || {})), tag: 'Branch' });
+            } catch {}
+            return origLogTo.apply(this, arguments);
+          };
+          OrigBE.prototype.__reactoRadarPatched = true;
+        }
+      }
+
+      br.__reactoRadarPatched = true;
+      _console.log('[RNDebugSDK] Branch interceptor active');
+      return true;
+    } catch { return false; }
+  }
+  if (!patchBranch()) { [500, 2000, 5000].forEach(d => setTimeout(patchBranch, d)); }
+})();
+
+// ─── MoEngage Interceptor ────────────────────────────────────────────────────
+(function setupMoEngageInterceptor() {
+  function patchMoEngage() {
+    try {
+      const moe = require('react-native-moengage');
+      if (!moe) return false;
+      const ReactMoE = moe.default || moe.ReactMoE || moe;
+      if (!ReactMoE || ReactMoE.__reactoRadarPatched) return false;
+
+      const target = typeof ReactMoE === 'function' ? ReactMoE.prototype : ReactMoE;
+      const methods = ['trackEvent', 'setUserAttribute', 'setAlias', 'setUniqueId', 'setUserName', 'setEmail'];
+      methods.forEach(methodName => {
+        if (typeof target[methodName] !== 'function') return;
+        const orig = target[methodName];
+        target[methodName] = function() {
+          try {
+            const name = methodName === 'trackEvent' ? (arguments[0] || methodName) : methodName;
+            const params = methodName === 'trackEvent' ? (arguments[1] || {}) : { value: arguments[0] };
+            try { mainCh.send({ type: 'ga4', name: String(name), params: JSON.parse(JSON.stringify(params)), tag: 'MoEngage' }); } catch {}
+          } catch {}
+          return orig.apply(this, arguments);
+        };
+      });
+      target.__reactoRadarPatched = true;
+      _console.log('[RNDebugSDK] MoEngage interceptor active');
+      return true;
+    } catch { return false; }
+  }
+  if (!patchMoEngage()) { [500, 2000, 5000].forEach(d => setTimeout(patchMoEngage, d)); }
+})();
+
+// ─── Algolia Search Insights Interceptor ─────────────────────────────────────
+(function setupAlgoliaInterceptor() {
+  function patchAlgolia() {
+    try {
+      const insights = require('search-insights');
+      if (!insights) return false;
+      const aa = insights.default || insights;
+      if (!aa || aa.__reactoRadarPatched) return false;
+
+      const methods = ['clickedObjectIDs', 'clickedObjectIDsAfterSearch', 'clickedFilters',
+        'convertedObjectIDs', 'convertedObjectIDsAfterSearch', 'convertedFilters',
+        'viewedObjectIDs', 'viewedFilters'];
+      methods.forEach(methodName => {
+        if (typeof aa[methodName] !== 'function') return;
+        const orig = aa[methodName];
+        aa[methodName] = function() {
+          try {
+            const params = arguments[0] || {};
+            try { mainCh.send({ type: 'ga4', name: methodName, params: JSON.parse(JSON.stringify(params)), tag: 'Algolia' }); } catch {}
+          } catch {}
+          return orig.apply(this, arguments);
+        };
+      });
+      aa.__reactoRadarPatched = true;
+      _console.log('[RNDebugSDK] Algolia Insights interceptor active');
+      return true;
+    } catch { return false; }
+  }
+  if (!patchAlgolia()) { [500, 2000, 5000].forEach(d => setTimeout(patchAlgolia, d)); }
+})();
+
 console.log(`[RNDebugSDK] Connected to ${HOST} | Console+Network:${PORTS.NETWORK_AND_CONSOLE} Redux:${PORTS.REDUX} Storage:${PORTS.STORAGE}`);
 
 module.exports = { reduxEnhancer, reduxMiddleware, watchAsyncStorage };

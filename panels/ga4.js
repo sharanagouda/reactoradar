@@ -2,14 +2,15 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // GA4 EVENT INSPECTOR
 // ─────────────────────────────────────────────────────────────────────────────
-const ga4State = { events: [], selected: -1, searchFilter: '', sortDir: 'desc' };
+const ga4State = { events: [], selected: -1, searchFilter: '', sortDir: 'desc', sourceFilter: 'all' };
+const _ga4SourceColors = { GA4: '#ffa500', PostHog: '#1d4aff', Branch: '#09b83e', MoEngage: '#00c853', Algolia: '#5468ff', Bloomreach: '#e8236b', GTM: '#4285f4' };
 
 function initGA4Panel() {
   const panel = $('panel-ga4');
   if (!panel) return;
   panel.innerHTML = `
     <div class="panel-toolbar">
-      <span class="panel-label">GA4 Events</span>
+      <span class="panel-label">Analytics</span>
       <span class="badge" id="ga4Badge">0</span>
       <input id="ga4Search" class="net-search-input" style="margin-left:12px" placeholder="Filter events..." />
       <div class="ml-auto" style="display:flex;align-items:center;gap:6px">
@@ -21,10 +22,19 @@ function initGA4Panel() {
         <button class="panel-clear-btn" id="ga4Clear" title="Clear GA4 events">Clear</button>
       </div>
     </div>
+    <div class="ga4-source-filters" id="ga4SourceFilters">
+      <button class="ga4-source-btn active" data-source="all">All</button>
+      <button class="ga4-source-btn" data-source="GA4" style="--src-color:#ffa500">Firebase</button>
+      <button class="ga4-source-btn" data-source="PostHog" style="--src-color:#1d4aff">PostHog</button>
+      <button class="ga4-source-btn" data-source="Branch" style="--src-color:#09b83e">Branch</button>
+      <button class="ga4-source-btn" data-source="MoEngage" style="--src-color:#00c853">MoEngage</button>
+      <button class="ga4-source-btn" data-source="Algolia" style="--src-color:#5468ff">Algolia</button>
+    </div>
     <div class="ga4-layout">
       <div class="ga4-list-pane">
         <div class="ga4-list-header">
           <span class="ga4-hcell ga4-sort-btn" id="ga4SortBtn" style="width:90px;cursor:pointer" title="Click to toggle sort order">Time <span id="ga4SortIcon">\u25BC</span></span>
+          <span class="ga4-hcell" style="width:70px">Source</span>
           <span class="ga4-hcell" style="flex:1">Event</span>
         </div>
         <div class="scroll-area" id="ga4List">
@@ -57,6 +67,17 @@ function initGA4Panel() {
     setGA4ColorsEnabled(e.target.checked);
     renderGA4List();
     renderGA4Summary();
+  });
+
+  // Source filter buttons
+  $('ga4SourceFilters')?.querySelectorAll('.ga4-source-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      ga4State.sourceFilter = btn.dataset.source;
+      $('ga4SourceFilters').querySelectorAll('.ga4-source-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      renderGA4List();
+      renderGA4Summary();
+    });
   });
 
   $('ga4Clear').addEventListener('click', () => {
@@ -162,10 +183,12 @@ function renderGA4List() {
   const empty = $('ga4Empty');
   if (!list) return;
 
-  const { searchFilter, sortDir } = ga4State;
-  let visible = ga4State.events.filter(e =>
-    !searchFilter || e.name.toLowerCase().includes(searchFilter)
-  );
+  const { searchFilter, sortDir, sourceFilter } = ga4State;
+  let visible = ga4State.events.filter(e => {
+    if (sourceFilter !== 'all' && (e.tag || 'GA4') !== sourceFilter) return false;
+    if (searchFilter && !e.name.toLowerCase().includes(searchFilter)) return false;
+    return true;
+  });
 
   // Sort: newest first (desc) or oldest first (asc)
   if (sortDir === 'desc') {
@@ -188,8 +211,11 @@ function renderGA4List() {
 
     const evtColor = _ga4EventColor(e.name);
     const colorStyle = evtColor ? `color:${evtColor}` : '';
+    const srcTag = e.tag || 'GA4';
+    const srcColor = _ga4SourceColors[srcTag] || 'var(--text-dim)';
     row.innerHTML = `
       <span class="ga4-cell ga4-time">${time}</span>
+      <span class="ga4-cell ga4-source-badge" style="width:70px"><span class="ga4-src-tag" style="background:${srcColor}22;color:${srcColor};border:1px solid ${srcColor}44">${esc(srcTag)}</span></span>
       <span class="ga4-cell ga4-name" style="${colorStyle}">${esc(e.name)}</span>`;
 
     row.addEventListener('click', () => {
@@ -227,8 +253,11 @@ function renderGA4Detail(e) {
   // Header info
   const header = document.createElement('div');
   header.className = 'ga4-detail-info';
+  const srcTag = e.tag || 'GA4';
+  const srcColor = _ga4SourceColors[srcTag] || 'var(--text-dim)';
   header.innerHTML = `
     <div class="ga4-detail-row"><span class="ga4-detail-key">Event Name</span><span class="ga4-detail-val" style="${_ga4EventColor(e.name) ? 'color:' + _ga4EventColor(e.name) + ';' : ''}font-weight:600;font-size:1.1em">${esc(e.name)}</span></div>
+    <div class="ga4-detail-row"><span class="ga4-detail-key">Source</span><span class="ga4-detail-val"><span class="ga4-src-tag" style="background:${srcColor}22;color:${srcColor};border:1px solid ${srcColor}44">${esc(srcTag)}</span></span></div>
     <div class="ga4-detail-row"><span class="ga4-detail-key">Timestamp</span><span class="ga4-detail-val">${time}</span></div>
 `;
   detail.appendChild(header);
@@ -286,7 +315,10 @@ function renderGA4Summary() {
   if (!summary) return;
 
   const counts = {};
-  ga4State.events.forEach(e => {
+  const eventsForSummary = ga4State.sourceFilter === 'all'
+    ? ga4State.events
+    : ga4State.events.filter(e => (e.tag || 'GA4') === ga4State.sourceFilter);
+  eventsForSummary.forEach(e => {
     counts[e.name] = (counts[e.name] || 0) + 1;
   });
 
@@ -294,9 +326,14 @@ function renderGA4Summary() {
 
   summary.innerHTML = '';
 
+  // Filter events by active source
+  const filteredEvents = ga4State.sourceFilter === 'all'
+    ? ga4State.events
+    : ga4State.events.filter(e => (e.tag || 'GA4') === ga4State.sourceFilter);
+
   const totalLabel = document.createElement('span');
   totalLabel.className = 'ga4-summary-label';
-  totalLabel.textContent = `Total: ${ga4State.events.length}`;
+  totalLabel.textContent = `Total: ${filteredEvents.length}`;
   summary.appendChild(totalLabel);
 
   sorted.forEach(([name, count]) => {

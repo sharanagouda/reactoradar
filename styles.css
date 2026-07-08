@@ -1684,6 +1684,48 @@ mark { background: rgba(79,172,255,.2); color: var(--accent); border-radius: 2px
 .ga4-summary-chip .chip-count { color: var(--text-dim); margin-left: 3px; }
 .ga4-summary-chip.active .chip-count { color: rgba(255,255,255,0.7); }
 
+/* Analytics source filter bar */
+.ga4-source-filters {
+  display: flex;
+  gap: 4px;
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg2);
+  flex-wrap: wrap;
+}
+.ga4-source-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 2px 10px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.ga4-source-btn:hover { border-color: var(--text-mid); color: var(--text-mid); }
+.ga4-source-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.ga4-source-btn[data-source]:not([data-source="all"]).active {
+  background: var(--src-color, var(--accent));
+  border-color: var(--src-color, var(--accent));
+}
+/* Source badge in event rows */
+.ga4-src-tag {
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+.ga4-source-badge { display: flex; align-items: center; }
+
 /* ── LIGHT THEME OVERRIDES ───────────────────────────────────────────────────── */
 [data-theme="light"] .tb-btn.primary {
   background: rgba(9,105,218,.08);
