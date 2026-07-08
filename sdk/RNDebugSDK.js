@@ -420,6 +420,74 @@ global.fetch = async (input, init = {}) => {
    if (global.XMLHttpRequest) wrapXHR();
 })();
 
+// ─── Image / Pixel Tracking Interceptor ──────────────────────────────────────
+// Captures tracking pixels loaded via new Image().src = url
+(function wrapImage() {
+  if (!global.Image) return;
+  const OrigImage = global.Image;
+  global.Image = function(w, h) {
+    const img = new OrigImage(w, h);
+    const origSrcDesc = Object.getOwnPropertyDescriptor(OrigImage.prototype, 'src') ||
+                        Object.getOwnPropertyDescriptor(HTMLImageElement?.prototype || {}, 'src');
+
+    // In React Native, Image may not have a standard src setter — use a Proxy-like approach
+    let _src = '';
+    try {
+      Object.defineProperty(img, 'src', {
+        get() { return _src; },
+        set(url) {
+          _src = url;
+          if (_shouldIntercept() && _networkCaptureEnabled && url) {
+            const id = `img_${_reqId++}`;
+            const t0 = Date.now();
+            try {
+              const u = typeof url === 'string' ? url : String(url);
+              mainCh.send({ type: 'network', phase: 'request', id, url: u, method: 'GET',
+                requestHeaders: {}, requestBody: null, ts: t0, initiator: 'Image' });
+              // Report as completed after a brief delay (pixel loads are fire-and-forget)
+              setTimeout(() => {
+                mainCh.send({ type: 'network', phase: 'response', id, url: u, method: 'GET',
+                  status: 200, statusText: 'OK', duration: Date.now() - t0,
+                  responseHeaders: { 'content-type': 'image/gif' },
+                  responseBody: '[Tracking Pixel]', ts: t0 });
+              }, 100);
+            } catch {}
+          }
+          // Call original setter if it exists
+          if (origSrcDesc && origSrcDesc.set) { origSrcDesc.set.call(img, url); }
+          else { try { OrigImage.prototype.__lookupSetter__?.('src')?.call(img, url); } catch {} }
+        },
+        configurable: true, enumerable: true
+      });
+    } catch {} // If defineProperty fails, Image tracking is skipped silently
+    return img;
+  };
+  global.Image.prototype = OrigImage.prototype;
+  Object.defineProperty(global.Image, 'name', { value: 'Image' });
+})();
+
+// ─── sendBeacon Interceptor ──────────────────────────────────────────────────
+// Captures navigator.sendBeacon calls (used for analytics/tracking)
+if (typeof navigator !== 'undefined' && navigator.sendBeacon) {
+  const _origBeacon = navigator.sendBeacon.bind(navigator);
+  navigator.sendBeacon = function(url, data) {
+    if (_shouldIntercept() && _networkCaptureEnabled && url) {
+      const id = `beacon_${_reqId++}`;
+      const t0 = Date.now();
+      try {
+        const u = typeof url === 'string' ? url : String(url);
+        mainCh.send({ type: 'network', phase: 'request', id, url: u, method: 'POST',
+          requestHeaders: { 'content-type': 'text/plain' },
+          requestBody: data ? (typeof data === 'string' ? data : '[Beacon Data]') : null, ts: t0, initiator: 'sendBeacon' });
+        mainCh.send({ type: 'network', phase: 'response', id, url: u, method: 'POST',
+          status: 200, statusText: 'OK', duration: 0,
+          responseHeaders: {}, responseBody: '[Beacon Sent]', ts: t0 });
+      } catch {}
+    }
+    return _origBeacon(url, data);
+  };
+}
+
 // ─── Axios Interceptor (belt-and-suspenders with XHR patch) ──────────────────
 // Patches axios.create after a tick so import hoisting has resolved.
 setTimeout(() => {
