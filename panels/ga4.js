@@ -2,7 +2,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // GA4 EVENT INSPECTOR
 // ─────────────────────────────────────────────────────────────────────────────
-const ga4State = { events: [], selected: -1, searchFilter: '', sortDir: 'desc', sourceFilter: 'all' };
+const ga4State = { events: [], selected: -1, searchFilter: '', sortDir: 'desc', sourceFilter: 'GA4' };
 const _ga4SourceColors = { GA4: '#ffa500', PostHog: '#1d4aff', Branch: '#09b83e', MoEngage: '#00c853', Algolia: '#5468ff', Bloomreach: '#e8236b', GTM: '#4285f4' };
 
 function initGA4Panel() {
@@ -10,7 +10,7 @@ function initGA4Panel() {
   if (!panel) return;
   panel.innerHTML = `
     <div class="panel-toolbar">
-      <span class="panel-label">Analytics</span>
+      <span class="panel-label">GA4 Events</span>
       <span class="badge" id="ga4Badge">0</span>
       <input id="ga4Search" class="net-search-input" style="margin-left:12px" placeholder="Filter events..." />
       <div class="ml-auto" style="display:flex;align-items:center;gap:6px">
@@ -23,8 +23,8 @@ function initGA4Panel() {
       </div>
     </div>
     <div class="ga4-source-filters" id="ga4SourceFilters">
-      <button class="ga4-source-btn active" data-source="all">All</button>
-      <button class="ga4-source-btn" data-source="GA4" style="--src-color:#ffa500">Firebase</button>
+      <button class="ga4-source-btn" data-source="all">All</button>
+      <button class="ga4-source-btn active" data-source="GA4" style="--src-color:#ffa500">Firebase</button>
       <button class="ga4-source-btn" data-source="PostHog" style="--src-color:#1d4aff">PostHog</button>
       <button class="ga4-source-btn" data-source="Branch" style="--src-color:#09b83e">Branch</button>
       <button class="ga4-source-btn" data-source="MoEngage" style="--src-color:#00c853">MoEngage</button>
