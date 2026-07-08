@@ -904,18 +904,36 @@ try {
         };
       });
 
-      // Also intercept BranchEvent constructor if available
+      // Intercept BranchEvent.logEvent() — this is how Branch events are actually dispatched
+      // Pattern: new BranchEvent(name, buos, params).logEvent()
       if (branch.BranchEvent) {
-        const OrigBE = branch.BranchEvent;
-        const origLogTo = OrigBE.prototype.logTo;
-        if (origLogTo && !OrigBE.prototype.__reactoRadarPatched) {
-          OrigBE.prototype.logTo = function() {
-            try {
-              mainCh.send({ type: 'ga4', name: this._name || 'BranchEvent', params: JSON.parse(JSON.stringify(this._customData || {})), tag: 'Branch' });
-            } catch {}
-            return origLogTo.apply(this, arguments);
-          };
-          OrigBE.prototype.__reactoRadarPatched = true;
+        const BEProto = branch.BranchEvent.prototype;
+        if (BEProto && !BEProto.__reactoRadarPatched) {
+          // Patch logEvent (the primary dispatch method)
+          if (typeof BEProto.logEvent === 'function') {
+            const origLogEvent = BEProto.logEvent;
+            BEProto.logEvent = function() {
+              try {
+                const name = this._name || this.name || 'BranchEvent';
+                const data = this._customData || this.customData || {};
+                mainCh.send({ type: 'ga4', name: String(name), params: JSON.parse(JSON.stringify(data)), tag: 'Branch' });
+              } catch {}
+              return origLogEvent.apply(this, arguments);
+            };
+          }
+          // Also patch logTo if it exists (older Branch SDK versions)
+          if (typeof BEProto.logTo === 'function') {
+            const origLogTo = BEProto.logTo;
+            BEProto.logTo = function() {
+              try {
+                const name = this._name || this.name || 'BranchEvent';
+                const data = this._customData || this.customData || {};
+                mainCh.send({ type: 'ga4', name: String(name), params: JSON.parse(JSON.stringify(data)), tag: 'Branch' });
+              } catch {}
+              return origLogTo.apply(this, arguments);
+            };
+          }
+          BEProto.__reactoRadarPatched = true;
         }
       }
 
