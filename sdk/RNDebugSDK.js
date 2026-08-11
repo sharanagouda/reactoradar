@@ -44,6 +44,7 @@ const PORTS = {
 let _networkCaptureEnabled = true;
 let _stackTraceEnabled = false; // Disabled by default for performance
 let _throttleProfile = 'none'; // 'none', 'fast3g', 'slow3g', 'offline'
+let _reqId = 0; // Monotonic counter for generated network request ids
 const THROTTLE_DELAYS = { none: 0, fast3g: 500, slow3g: 2000, offline: -1 };
 
 // ─── SDK Pause/Resume (allows inspector to work without SDK interference) ────
