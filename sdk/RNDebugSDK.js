@@ -25,7 +25,9 @@ if (typeof __DEV__ === 'undefined' || !__DEV__) {
 const HOST_OVERRIDE = null; // Set to your Mac's LAN IP for iOS real device, e.g. '192.168.1.100'
 
 function _detectHost() {
-  if (HOST_OVERRIDE) return HOST_OVERRIDE;
+  if (HOST_OVERRIDE) {
+    return HOST_OVERRIDE;
+  }
   try {
     const { Platform } = require('react-native');
     if (Platform.OS === 'android') return '10.0.2.2';
@@ -46,6 +48,66 @@ let _stackTraceEnabled = false; // Disabled by default for performance
 let _throttleProfile = 'none'; // 'none', 'fast3g', 'slow3g', 'offline'
 let _reqId = 0; // Monotonic counter for generated network request ids
 const THROTTLE_DELAYS = { none: 0, fast3g: 500, slow3g: 2000, offline: -1 };
+const SDK_STATUS_ACTION = 'sdk-status';
+const STATE_NOT_SERIALIZABLE_ERROR = 'State not serializable';
+
+function _safeClone(value, fallback = null) {
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return fallback;
+  }
+}
+
+function _toStringSafe(value) {
+  try {
+    return String(value);
+  } catch {
+    return '';
+  }
+}
+
+function _toJSONMessage(obj) {
+  try {
+    return JSON.stringify({ ...obj, ts: Date.now() }, (_, v) => typeof v === 'bigint' ? v.toString() : v);
+  } catch {
+    return '';
+  }
+}
+
+function _serializeReduxState(state) {
+  try {
+    const serialized = JSON.stringify(state, (_, v) => typeof v === 'bigint' ? v.toString() : v);
+    if (serialized.length > 1_000_000) {
+      return { __truncated: true, sizeBytes: serialized.length, keys: Object.keys(state || {}) };
+    }
+    return JSON.parse(serialized);
+  } catch {
+    return { __error: STATE_NOT_SERIALIZABLE_ERROR };
+  }
+}
+
+function _serializeNetworkBody(body) {
+  if (body == null) return null;
+  if (typeof body === 'string') return body;
+  const cloned = _safeClone(body, null);
+  return cloned === null ? _toStringSafe(body) : cloned;
+}
+
+function _makeId(prefix) {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+}
+
+function _buildURL(baseURL, path) {
+  if (!baseURL) return path || '';
+  return baseURL.replace(/\/+$/, '') + '/' + String(path || '').replace(/^\/+/, '');
+}
+
+function _sendGAEvent(tag, name, params) {
+  try {
+    mainCh.send({ type: 'ga4', name: String(name), params: _safeClone(params, {}), tag });
+  } catch {}
+}
 
 // ─── SDK Pause/Resume (allows inspector to work without SDK interference) ────
 // When paused, console/fetch/XHR interception is disabled so the RN inspector
@@ -93,7 +155,39 @@ function _shouldIntercept() {
 
 // ─── WebSocket Factory ────────────────────────────────────────────────────────
 function makeChannel(port, name, onMessage) {
-  let ws = null, queue = [], connected = false, retryDelay = 2000;
+  let ws = null;
+  const queue = [];
+  let connected = false;
+  let retryDelay = 2000;
+
+  function scheduleReconnect() {
+    setTimeout(connect, retryDelay);
+    retryDelay = Math.min(retryDelay * 1.5, 30000);
+  }
+
+  function flushQueue() {
+    const pending = queue.splice(0);
+    for (const m of pending) {
+      const isOpen = ws && ws.readyState === WebSocket.OPEN;
+      if (!isOpen) {
+        queue.push(m);
+        break;
+      }
+      try {
+        ws.send(m);
+      } catch {
+        queue.push(m);
+        break;
+      }
+    }
+  }
+
+  function handleMessage(evt) {
+    if (!onMessage) return;
+    try {
+      onMessage(JSON.parse(evt.data));
+    } catch {}
+  }
 
   function connect() {
     ws = null;
@@ -103,29 +197,32 @@ function makeChannel(port, name, onMessage) {
       ws.onopen = () => {
         connected = true;
         retryDelay = 2000;
-        const pending = queue.splice(0);
-        for (const m of pending) {
-          try { if (ws.readyState === WebSocket.OPEN) ws.send(m); else { queue.push(m); break; } }
-          catch { queue.push(m); break; }
-        }
+        flushQueue();
       };
-      ws.onmessage = (evt) => {
-        if (onMessage) {
-          try { onMessage(JSON.parse(evt.data)); } catch {}
-        }
+      ws.onmessage = handleMessage;
+      ws.onclose = () => {
+        connected = false;
+        scheduleReconnect();
       };
-      ws.onclose = () => { connected = false; setTimeout(connect, retryDelay); retryDelay = Math.min(retryDelay * 1.5, 30000); };
       ws.onerror = () => {};
-    } catch { setTimeout(connect, retryDelay); retryDelay = Math.min(retryDelay * 1.5, 30000); }
+    } catch {
+      scheduleReconnect();
+    }
   }
 
   function send(obj) {
-    let msg;
-    try {
-      msg = JSON.stringify({ ...obj, ts: Date.now() }, (_, v) => typeof v === 'bigint' ? v.toString() : v);
-    } catch { return; }
-    if (connected && ws?.readyState === WebSocket.OPEN) { try { ws.send(msg); } catch {} }
-    else { queue.push(msg); if (queue.length > 300) queue.shift(); }
+    const msg = _toJSONMessage(obj);
+    if (!msg) return;
+
+    if (connected && ws?.readyState === WebSocket.OPEN) {
+      try {
+        ws.send(msg);
+        return;
+      } catch {}
+    }
+
+    queue.push(msg);
+    if (queue.length > 300) queue.shift();
   }
 
   connect();
@@ -134,25 +231,28 @@ function makeChannel(port, name, onMessage) {
 
 // The main channel (console + network) listens for control messages from the debugger
 const mainCh    = makeChannel(PORTS.NETWORK_AND_CONSOLE, 'main', (msg) => {
-  if (msg.type === 'control') {
-    if (msg.action === 'set-network-capture') _networkCaptureEnabled = !!msg.enabled;
-    if (msg.action === 'set-throttle') _throttleProfile = msg.profile || 'none';
-    if (msg.action === 'set-stack-trace') _stackTraceEnabled = !!msg.enabled;
-    // Pause/Resume SDK interception (allows inspector to work)
-    if (msg.action === 'pause-sdk') {
-      _sdkPaused = true;
-      _console.log('[RNDebugSDK] SDK paused — inspector/debugger can now inspect the app freely.');
-      mainCh.send({ type: 'control', action: 'sdk-status', paused: true });
-    }
-    if (msg.action === 'resume-sdk') {
-      _sdkPaused = false;
-      _console.log('[RNDebugSDK] SDK resumed — interception re-enabled.');
-      mainCh.send({ type: 'control', action: 'sdk-status', paused: false });
-    }
-    // Query current status
-    if (msg.action === 'query-sdk-status') {
-      mainCh.send({ type: 'control', action: 'sdk-status', paused: _sdkPaused, debuggerDetected: _debuggerDetected });
-    }
+  if (msg.type !== 'control') return;
+
+  if (msg.action === 'set-network-capture') _networkCaptureEnabled = !!msg.enabled;
+  if (msg.action === 'set-throttle') _throttleProfile = msg.profile || 'none';
+  if (msg.action === 'set-stack-trace') _stackTraceEnabled = !!msg.enabled;
+
+  if (msg.action === 'pause-sdk') {
+    _sdkPaused = true;
+    _console.log('[RNDebugSDK] SDK paused — inspector/debugger can now inspect the app freely.');
+    mainCh.send({ type: 'control', action: SDK_STATUS_ACTION, paused: true });
+    return;
+  }
+
+  if (msg.action === 'resume-sdk') {
+    _sdkPaused = false;
+    _console.log('[RNDebugSDK] SDK resumed — interception re-enabled.');
+    mainCh.send({ type: 'control', action: SDK_STATUS_ACTION, paused: false });
+    return;
+  }
+
+  if (msg.action === 'query-sdk-status') {
+    mainCh.send({ type: 'control', action: SDK_STATUS_ACTION, paused: _sdkPaused, debuggerDetected: _debuggerDetected });
   }
 });
 const reduxCh   = makeChannel(PORTS.REDUX,   'redux');
@@ -160,23 +260,27 @@ const storageCh = makeChannel(PORTS.STORAGE, 'storage');
 
 // ─── Console Intercept ────────────────────────────────────────────────────────
 function serializeArg(a) {
+  const primitiveType = typeof a;
   if (a === null) return { t: 'null', v: null };
   if (a === undefined) return { t: 'undefined', v: undefined };
-  if (typeof a === 'string') return { t: 'string', v: a };
-  if (typeof a === 'number') return { t: 'number', v: a };
-  if (typeof a === 'boolean') return { t: 'boolean', v: a };
-  if (typeof a === 'symbol') return { t: 'string', v: a.toString() };
-  if (typeof a === 'function') return { t: 'string', v: `[Function: ${a.name || 'anonymous'}]` };
+  if (primitiveType === 'string' || primitiveType === 'number' || primitiveType === 'boolean') return { t: primitiveType, v: a };
+  if (primitiveType === 'symbol') return { t: 'string', v: a.toString() };
+  if (primitiveType === 'function') return { t: 'string', v: `[Function: ${a.name || 'anonymous'}]` };
   if (a instanceof Error) return { t: 'object', v: { name: a.name, message: a.message, stack: a.stack } };
+
   if (Array.isArray(a)) {
-    try { const j = JSON.parse(JSON.stringify(a)); return { t: 'array', v: j }; }
-    catch { return { t: 'string', v: String(a) }; }
+    const clonedArray = _safeClone(a, null);
+    if (clonedArray !== null) return { t: 'array', v: clonedArray };
+    return { t: 'string', v: _toStringSafe(a) };
   }
-  if (typeof a === 'object') {
-    try { const j = JSON.parse(JSON.stringify(a)); return { t: 'object', v: j }; }
-    catch { return { t: 'string', v: String(a) }; }
+
+  if (primitiveType === 'object') {
+    const clonedObject = _safeClone(a, null);
+    if (clonedObject !== null) return { t: 'object', v: clonedObject };
+    return { t: 'string', v: _toStringSafe(a) };
   }
-  return { t: 'string', v: String(a) };
+
+  return { t: 'string', v: _toStringSafe(a) };
 }
 
 const LEVELS = ['log','info','warn','error','debug'];
@@ -185,26 +289,51 @@ const _console = {};
 // Pre-compiled regexes for stack parsing (avoid creating per call)
 const _skipRe = /RNDebugSDK|apply \(native\)|call \(native\)|anonymous \(native\)|MessageQueue|__callFunction|__guard|callFunctionReturn|processTicksAndRejections/;
 const _frameRe = /at\s+(.+?)(?:\s+\((.+?):(\d+):\d+\)|(?:\s+)?(.+?):(\d+):\d+)/;
+const _consoleFnRe = /^console|^_console|^overrideMethod|^reactConsoleError|^anonymous$/;
+
+function _parseFrame(frame) {
+  const m = frame.match(_frameRe);
+  if (!m) return null;
+  return { fn: m[1] || '', src: m[2] || m[4] || '', ln: m[3] || m[5] || '' };
+}
+
+function _formatCallerFromParsed(parsed) {
+  if (!parsed || _consoleFnRe.test(parsed.fn) || parsed.fn.length <= 2) return '';
+  const hasRealSource = parsed.src && !parsed.src.includes('index.bundle') && /\.[jt]sx?$/.test(parsed.src);
+  if (hasRealSource) {
+    return `${parsed.src.split('/').pop()}:${parsed.ln}` + (parsed.fn.length > 2 ? ` (${parsed.fn})` : '');
+  }
+  if (parsed.fn.length >= 3 && parsed.fn !== 'Object' && parsed.fn !== 'Function') return parsed.fn;
+  return '';
+}
 
 function _extractCaller() {
   const stack = (new Error().stack || '').split('\n');
   for (let i = 2; i < Math.min(stack.length, 15); i++) {
     const frame = stack[i]?.trim() || '';
     if (!frame || _skipRe.test(frame)) continue;
-    const m = frame.match(_frameRe);
-    if (!m) continue;
-    const fn = m[1] || '', src = m[2] || m[4] || '', ln = m[3] || m[5] || '';
-    // Skip console internals and single-char minified names from Hermes
-    if (/^console|^_console|^overrideMethod|^reactConsoleError|^anonymous$/.test(fn)) continue;
-    if (fn.length <= 2) continue; // Skip minified single/double-char names like "a", "b", "Oa"
-    // Real source file
-    if (src && !src.includes('index.bundle') && /\.[jt]sx?$/.test(src)) {
-      return `${src.split('/').pop()}:${ln}` + (fn.length > 2 ? ` (${fn})` : '');
-    }
-    // Named function from bundle — must be meaningful (3+ chars, starts with uppercase = component)
-    if (fn.length >= 3 && fn !== 'Object' && fn !== 'Function') return fn;
+    const parsed = _parseFrame(frame);
+    const caller = _formatCallerFromParsed(parsed);
+    if (caller) return caller;
   }
   return '';
+}
+
+function _stringifyConsoleArg(a) {
+  if (typeof a === 'string') return a;
+  try {
+    return JSON.stringify(a, null, 2);
+  } catch {
+    return String(a);
+  }
+}
+
+function _emitConsoleToChannel(level, args) {
+  if (!_shouldIntercept()) return;
+  const structuredArgs = args.map(serializeArg);
+  const message = args.map(_stringifyConsoleArg).join(' ');
+  const caller = _stackTraceEnabled ? _extractCaller() : '';
+  mainCh.send({ type: 'console', level, message, args: structuredArgs, caller });
 }
 
 LEVELS.forEach(level => {
@@ -213,20 +342,7 @@ LEVELS.forEach(level => {
   _console[level] = orig.bind(console);
   console[level] = (...args) => {
     try { _console[level](...args); } catch {}
-    try {
-      // Skip interception when SDK is paused or debugger is attached
-      // This prevents double-logging and message queue deadlocks with CDP
-      if (!_shouldIntercept()) return;
-      const structuredArgs = args.map(serializeArg);
-      const message = args.map(a => {
-        if (typeof a === 'string') return a;
-        try { return JSON.stringify(a, null, 2); } catch { return String(a); }
-      }).join(' ');
-      // Stack trace capture controlled by toggle (disabled by default for performance)
-      // When enabled: captures for all levels. When disabled: skips entirely.
-      const caller = _stackTraceEnabled ? _extractCaller() : '';
-      mainCh.send({ type: 'console', level, message, args: structuredArgs, caller });
-    } catch {} // end of interception try
+    try { _emitConsoleToChannel(level, args); } catch {}
   };
 });
 
@@ -234,22 +350,93 @@ LEVELS.forEach(level => {
 function _flattenHeaders(h) {
   if (!h) return {};
   const flat = {};
+
+  function assignHeader(k, v) {
+    if (v == null) return;
+    if (typeof v === 'object') {
+      const serialized = _safeClone(v, null);
+      flat[k] = serialized === null ? _toStringSafe(v) : _toStringSafe(JSON.stringify(serialized));
+      return;
+    }
+    flat[k] = _toStringSafe(v);
+  }
+
   try {
-    // Handle Headers object (has forEach)
     if (typeof h.forEach === 'function') {
-      h.forEach((v, k) => { flat[k] = String(v); });
+      h.forEach((v, k) => assignHeader(k, v));
       return flat;
     }
-    // Handle plain object — stringify nested objects
+
     if (typeof h === 'object') {
-      Object.entries(h).forEach(([k, v]) => {
-        if (v == null) return;
-        flat[k] = (typeof v === 'object') ? JSON.stringify(v) : String(v);
-      });
+      Object.entries(h).forEach(([k, v]) => assignHeader(k, v));
       return flat;
     }
   } catch {}
   return flat;
+}
+
+function _responseHeadersToObject(headers) {
+  const out = {};
+  headers?.forEach?.((v, k) => {
+    out[k] = v;
+  });
+  return out;
+}
+
+function _fetchMeta(input, init) {
+  return {
+    url: typeof input === 'string' ? input : input?.url || '',
+    method: (init.method || 'GET').toUpperCase(),
+    id: _makeId('f'),
+  };
+}
+
+function _isBinaryResponse(contentType, contentLen) {
+  return contentLen > 1_000_000 || /image|video|audio|octet-stream|font/i.test(contentType);
+}
+
+function _captureFetchBinaryResponse(resp, meta, t0, contentType, contentLen) {
+  mainCh.send({
+    type: 'network',
+    phase: 'response',
+    id: meta.id,
+    url: meta.url,
+    method: meta.method,
+    status: resp.status,
+    statusText: resp.statusText,
+    duration: Date.now() - t0,
+    responseHeaders: _responseHeadersToObject(resp.headers),
+    responseBody: `[Binary ${contentType} — ${contentLen} bytes]`,
+  });
+}
+
+function _captureFetchTextResponse(resp, meta, t0) {
+  let clone;
+  try {
+    clone = resp.clone();
+  } catch {
+    return;
+  }
+
+  clone.text().then(body => {
+    if (!_networkCaptureEnabled) return;
+    let parsed = body;
+    try {
+      parsed = JSON.parse(body);
+    } catch {}
+    mainCh.send({
+      type: 'network',
+      phase: 'response',
+      id: meta.id,
+      url: meta.url,
+      method: meta.method,
+      status: resp.status,
+      statusText: resp.statusText,
+      duration: Date.now() - t0,
+      responseHeaders: _responseHeadersToObject(clone.headers),
+      responseBody: parsed,
+    });
+  }).catch(() => {});
 }
 
 // ─── Fetch Intercept ─────────────────────────────────────────────────────────
@@ -266,11 +453,9 @@ global.fetch = async (input, init = {}) => {
 
   if (!_networkCaptureEnabled) return _fetch(input, init);
 
-  const url   = typeof input === 'string' ? input : input?.url || '';
-  const method = (init.method || 'GET').toUpperCase();
-  const id    = `f-${Date.now()}-${Math.random().toString(36).slice(2,6)}`;
+  const meta = _fetchMeta(input, init);
 
-  mainCh.send({ type: 'network', phase: 'request', id, url, method,
+  mainCh.send({ type: 'network', phase: 'request', id: meta.id, url: meta.url, method: meta.method,
     requestHeaders: _flattenHeaders(init.headers), requestBody: init.body || null });
 
   const t0 = Date.now();
@@ -279,31 +464,12 @@ global.fetch = async (input, init = {}) => {
     try {
       const contentType = resp.headers?.get?.('content-type') || '';
       const contentLen = parseInt(resp.headers?.get?.('content-length') || '0', 10);
-      if (contentLen > 1_000_000 || /image|video|audio|octet-stream|font/i.test(contentType)) {
-        const rHeaders = {};
-        resp.headers?.forEach?.((v, k) => { rHeaders[k] = v; });
-        mainCh.send({ type: 'network', phase: 'response', id, url: String(typeof input === 'string' ? input : input?.url || ''),
-          method, status: resp.status, statusText: resp.statusText, duration: Date.now() - t0,
-          responseHeaders: rHeaders, responseBody: `[Binary ${contentType} — ${contentLen} bytes]` });
-      } else {
-        try {
-          const clone = resp.clone();
-          clone.text().then(body => {
-            if (!_networkCaptureEnabled) return;
-            let parsed = body;
-            try { parsed = JSON.parse(body); } catch {}
-            const rHeaders = {};
-            clone.headers?.forEach?.((v, k) => { rHeaders[k] = v; });
-            mainCh.send({ type: 'network', phase: 'response', id, url, method,
-              status: resp.status, statusText: resp.statusText,
-              duration: Date.now() - t0, responseHeaders: rHeaders, responseBody: parsed });
-          }).catch(() => {});
-        } catch {} // clone failed — skip capture
-      }
+      if (_isBinaryResponse(contentType, contentLen)) _captureFetchBinaryResponse(resp, meta, t0, contentType, contentLen);
+      else _captureFetchTextResponse(resp, meta, t0);
     } catch {} // header access failed
     return resp;
   } catch (err) {
-    mainCh.send({ type: 'network', phase: 'error', id, url, method,
+    mainCh.send({ type: 'network', phase: 'error', id: meta.id, url: meta.url, method: meta.method,
       duration: Date.now() - t0, error: err?.message || String(err) });
     throw err;
   }
@@ -314,6 +480,84 @@ global.fetch = async (input, init = {}) => {
 // patching prototype methods (which get overwritten), we use a non-invasive
 // approach: wrap XMLHttpRequest constructor to add a readystatechange listener
 // on every NEW instance. This works regardless of who patches the prototype.
+function _makeXHRMeta() {
+  return { id: _makeId('x'), method: 'GET', url: '', t0: 0, headers: {}, sent: false };
+}
+
+function _readXHRBody(xhr) {
+  const rType = xhr.responseType || '';
+  if (rType === 'json') return xhr.response;
+  if (rType !== '' && rType !== 'text') {
+    return `[${rType} response — ${xhr.response?.size || xhr.response?.byteLength || '?'} bytes]`;
+  }
+
+  let text = '';
+  try {
+    text = xhr.responseText || '';
+  } catch {
+    return '';
+  }
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+function _parseXHRHeaders(xhr) {
+  const respHeaders = {};
+  try {
+    const raw = xhr.getAllResponseHeaders() || '';
+    raw.split('\r\n').forEach(line => {
+      const idx = line.indexOf(':');
+      if (idx > 0) respHeaders[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
+    });
+  } catch {}
+  return respHeaders;
+}
+
+function _emitXHRRequest(meta, body) {
+  mainCh.send({
+    type: 'network',
+    phase: 'request',
+    id: meta.id,
+    url: meta.url,
+    method: meta.method,
+    requestHeaders: meta.headers,
+    requestBody: _serializeNetworkBody(body),
+  });
+}
+
+function _emitXHRDone(xhr, meta) {
+  const duration = Date.now() - meta.t0;
+  if (xhr.status <= 0) {
+    mainCh.send({
+      type: 'network',
+      phase: 'error',
+      id: meta.id,
+      url: meta.url,
+      method: meta.method,
+      duration,
+      error: 'Request failed (status 0)',
+    });
+    return;
+  }
+
+  mainCh.send({
+    type: 'network',
+    phase: 'response',
+    id: meta.id,
+    url: meta.url,
+    method: meta.method,
+    status: xhr.status,
+    statusText: xhr.statusText,
+    duration,
+    responseHeaders: _parseXHRHeaders(xhr),
+    responseBody: _readXHRBody(xhr),
+  });
+}
+
 (function setupXHRNetworkCapture() {
   const _xhrTracker = new WeakMap();
 
@@ -323,7 +567,7 @@ global.fetch = async (input, init = {}) => {
 
     function WrappedXHR() {
       const xhr = new OrigXHR();
-      const meta = { id: `x-${Date.now()}-${Math.random().toString(36).slice(2,6)}`, method: 'GET', url: '', t0: 0, headers: {}, sent: false };
+      const meta = _makeXHRMeta();
       _xhrTracker.set(xhr, meta);
 
       // Wrap open
@@ -343,56 +587,22 @@ global.fetch = async (input, init = {}) => {
         return _setHeader.apply(xhr, arguments);
       };
 
-       // Wrap send
-       const _send = xhr.send.bind(xhr);
-       xhr.send = function(body) {
-         if (_shouldIntercept() && _networkCaptureEnabled && !meta.sent) {
-           meta.sent = true;
-           let reqBody = null;
-           if (body != null) {
-             try { reqBody = typeof body === 'string' ? body : JSON.parse(JSON.stringify(body)); } catch { reqBody = String(body); }
-           }
-           mainCh.send({ type: 'network', phase: 'request', id: meta.id, url: meta.url,
-             method: meta.method, requestHeaders: meta.headers, requestBody: reqBody });
-         }
-         return _send.apply(xhr, arguments);
-       };
+      const _send = xhr.send.bind(xhr);
+      xhr.send = function(body) {
+        const shouldTrack = _shouldIntercept() && _networkCaptureEnabled && !meta.sent;
+        if (shouldTrack) {
+          meta.sent = true;
+          _emitXHRRequest(meta, body);
+        }
+        return _send.apply(xhr, arguments);
+      };
 
       // Listen for completion
-       xhr.addEventListener('readystatechange', function() {
-         if (xhr.readyState !== 4 || !meta.sent || !_shouldIntercept() || !_networkCaptureEnabled) return;
+      xhr.addEventListener('readystatechange', function() {
+        if (xhr.readyState !== 4 || !meta.sent || !_shouldIntercept() || !_networkCaptureEnabled) return;
         try {
-          const duration = Date.now() - meta.t0;
-          if (xhr.status > 0) {
-            // Safely read response body — responseText throws if responseType is blob/arraybuffer
-            let respBody = null;
-            const rType = xhr.responseType || '';
-            if (rType === '' || rType === 'text') {
-              try { respBody = xhr.responseText || ''; } catch { respBody = ''; }
-              try { respBody = JSON.parse(respBody); } catch {}
-            } else if (rType === 'json') {
-              respBody = xhr.response;
-            } else {
-              // blob, arraybuffer, document — can't serialize, show type info
-              respBody = `[${rType} response — ${xhr.response?.size || xhr.response?.byteLength || '?'} bytes]`;
-            }
-            const respHeaders = {};
-            try {
-              const raw = xhr.getAllResponseHeaders() || '';
-              raw.split('\r\n').forEach(line => {
-                const idx = line.indexOf(':');
-                if (idx > 0) respHeaders[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
-              });
-            } catch {}
-            mainCh.send({ type: 'network', phase: 'response', id: meta.id, url: meta.url,
-              method: meta.method, status: xhr.status, statusText: xhr.statusText,
-              duration, responseHeaders: respHeaders, responseBody: respBody });
-          } else {
-            mainCh.send({ type: 'network', phase: 'error', id: meta.id, url: meta.url,
-              method: meta.method, duration: Date.now() - meta.t0, error: 'Request failed (status 0)' });
-          }
+          _emitXHRDone(xhr, meta);
         } catch (e) {
-          // Safety net — never let our interceptor crash the app
           mainCh.send({ type: 'network', phase: 'response', id: meta.id, url: meta.url,
             method: meta.method, status: xhr.status || 0, duration: Date.now() - meta.t0,
             responseBody: `[Error reading response: ${e.message}]` });
@@ -417,12 +627,36 @@ global.fetch = async (input, init = {}) => {
     _console.log('[RNDebugSDK] XHR constructor wrapped for network capture');
   }
 
-   // Wrap immediately if available
-   if (global.XMLHttpRequest) wrapXHR();
+  // Wrap immediately if available
+  if (global.XMLHttpRequest) wrapXHR();
 })();
 
 // ─── Image / Pixel Tracking Interceptor ──────────────────────────────────────
 // Captures tracking pixels loaded via new Image().src = url
+function _captureImagePixel(url) {
+  const id = `img_${_reqId++}`;
+  const t0 = Date.now();
+  const u = typeof url === 'string' ? url : _toStringSafe(url);
+  mainCh.send({ type: 'network', phase: 'request', id, url: u, method: 'GET',
+    requestHeaders: {}, requestBody: null, ts: t0, initiator: 'Image' });
+  setTimeout(() => {
+    mainCh.send({ type: 'network', phase: 'response', id, url: u, method: 'GET',
+      status: 200, statusText: 'OK', duration: Date.now() - t0,
+      responseHeaders: { 'content-type': 'image/gif' },
+      responseBody: '[Tracking Pixel]', ts: t0 });
+  }, 100);
+}
+
+function _setOriginalImageSrc(img, url, origSrcDesc, OrigImage) {
+  if (origSrcDesc && origSrcDesc.set) {
+    origSrcDesc.set.call(img, url);
+    return;
+  }
+  try {
+    OrigImage.prototype.__lookupSetter__?.('src')?.call(img, url);
+  } catch {}
+}
+
 (function wrapImage() {
   if (!global.Image) return;
   const OrigImage = global.Image;
@@ -439,24 +673,9 @@ global.fetch = async (input, init = {}) => {
         set(url) {
           _src = url;
           if (_shouldIntercept() && _networkCaptureEnabled && url) {
-            const id = `img_${_reqId++}`;
-            const t0 = Date.now();
-            try {
-              const u = typeof url === 'string' ? url : String(url);
-              mainCh.send({ type: 'network', phase: 'request', id, url: u, method: 'GET',
-                requestHeaders: {}, requestBody: null, ts: t0, initiator: 'Image' });
-              // Report as completed after a brief delay (pixel loads are fire-and-forget)
-              setTimeout(() => {
-                mainCh.send({ type: 'network', phase: 'response', id, url: u, method: 'GET',
-                  status: 200, statusText: 'OK', duration: Date.now() - t0,
-                  responseHeaders: { 'content-type': 'image/gif' },
-                  responseBody: '[Tracking Pixel]', ts: t0 });
-              }, 100);
-            } catch {}
+            try { _captureImagePixel(url); } catch {}
           }
-          // Call original setter if it exists
-          if (origSrcDesc && origSrcDesc.set) { origSrcDesc.set.call(img, url); }
-          else { try { OrigImage.prototype.__lookupSetter__?.('src')?.call(img, url); } catch {} }
+          _setOriginalImageSrc(img, url, origSrcDesc, OrigImage);
         },
         configurable: true, enumerable: true
       });
@@ -469,21 +688,24 @@ global.fetch = async (input, init = {}) => {
 
 // ─── sendBeacon Interceptor ──────────────────────────────────────────────────
 // Captures navigator.sendBeacon calls (used for analytics/tracking)
+function _captureBeacon(url, data) {
+  const id = `beacon_${_reqId++}`;
+  const t0 = Date.now();
+  const u = typeof url === 'string' ? url : _toStringSafe(url);
+  const body = data ? (typeof data === 'string' ? data : '[Beacon Data]') : null;
+  mainCh.send({ type: 'network', phase: 'request', id, url: u, method: 'POST',
+    requestHeaders: { 'content-type': 'text/plain' },
+    requestBody: body, ts: t0, initiator: 'sendBeacon' });
+  mainCh.send({ type: 'network', phase: 'response', id, url: u, method: 'POST',
+    status: 200, statusText: 'OK', duration: 0,
+    responseHeaders: {}, responseBody: '[Beacon Sent]', ts: t0 });
+}
+
 if (typeof navigator !== 'undefined' && navigator.sendBeacon) {
   const _origBeacon = navigator.sendBeacon.bind(navigator);
   navigator.sendBeacon = function(url, data) {
     if (_shouldIntercept() && _networkCaptureEnabled && url) {
-      const id = `beacon_${_reqId++}`;
-      const t0 = Date.now();
-      try {
-        const u = typeof url === 'string' ? url : String(url);
-        mainCh.send({ type: 'network', phase: 'request', id, url: u, method: 'POST',
-          requestHeaders: { 'content-type': 'text/plain' },
-          requestBody: data ? (typeof data === 'string' ? data : '[Beacon Data]') : null, ts: t0, initiator: 'sendBeacon' });
-        mainCh.send({ type: 'network', phase: 'response', id, url: u, method: 'POST',
-          status: 200, statusText: 'OK', duration: 0,
-          responseHeaders: {}, responseBody: '[Beacon Sent]', ts: t0 });
-      } catch {}
+      try { _captureBeacon(url, data); } catch {}
     }
     return _origBeacon(url, data);
   };
@@ -491,63 +713,103 @@ if (typeof navigator !== 'undefined' && navigator.sendBeacon) {
 
 // ─── Axios Interceptor (belt-and-suspenders with XHR patch) ──────────────────
 // Patches axios.create after a tick so import hoisting has resolved.
+function _axiosHeaders(headers) {
+  const source = typeof headers?.toJSON === 'function' ? headers.toJSON() : headers;
+  return _flattenHeaders(source);
+}
+
+function _axiosMethod(method) {
+  return (method || 'GET').toUpperCase();
+}
+
+function _sendAxiosRequest(config) {
+  const id = _makeId('ax');
+  config._dbgId = id;
+  config._dbgT0 = Date.now();
+  mainCh.send({
+    type: 'network',
+    phase: 'request',
+    id,
+    url: _buildURL(config.baseURL, config.url),
+    method: _axiosMethod(config.method),
+    requestHeaders: _axiosHeaders(config.headers),
+    requestBody: _serializeNetworkBody(config.data),
+  });
+}
+
+function _sendAxiosResponse(resp) {
+  const c = resp.config || {};
+  if (!c._dbgId) return;
+  mainCh.send({
+    type: 'network',
+    phase: 'response',
+    id: c._dbgId,
+    url: _buildURL(c.baseURL, c.url),
+    method: _axiosMethod(c.method),
+    status: resp.status,
+    statusText: resp.statusText,
+    duration: c._dbgT0 ? Date.now() - c._dbgT0 : 0,
+    responseHeaders: _axiosHeaders(resp.headers),
+    responseBody: _serializeNetworkBody(resp.data),
+  });
+}
+
+function _sendAxiosError(err) {
+  const c = err?.config || {};
+  if (!c._dbgId) return;
+
+  const url = _buildURL(c.baseURL, c.url);
+  const duration = c._dbgT0 ? Date.now() - c._dbgT0 : 0;
+  const method = _axiosMethod(c.method);
+  const response = err?.response;
+
+  if (!response) {
+    mainCh.send({ type: 'network', phase: 'error', id: c._dbgId, url, method, duration, error: err?.message || String(err) });
+    return;
+  }
+
+  mainCh.send({
+    type: 'network',
+    phase: 'response',
+    id: c._dbgId,
+    url,
+    method,
+    status: response.status,
+    statusText: response.statusText,
+    duration,
+    responseBody: _serializeNetworkBody(response.data),
+  });
+}
+
+function _addDbgInterceptors(instance) {
+  if (!instance || !instance.interceptors || instance.__dbgInt) return;
+  instance.__dbgInt = true;
+
+  instance.interceptors.request.use(config => {
+    if (_shouldIntercept() && _networkCaptureEnabled) _sendAxiosRequest(config);
+    return config;
+  }, e => Promise.reject(e));
+
+  instance.interceptors.response.use(resp => {
+    if (_shouldIntercept() && _networkCaptureEnabled) _sendAxiosResponse(resp);
+    return resp;
+  }, err => {
+    if (_shouldIntercept() && _networkCaptureEnabled) _sendAxiosError(err);
+    return Promise.reject(err);
+  });
+}
+
 setTimeout(() => {
   try {
     const axios = require('axios');
     if (!axios || axios.__dbgPatched) return;
     axios.__dbgPatched = true;
 
-    function addDbgInterceptors(instance) {
-      if (!instance || !instance.interceptors || instance.__dbgInt) return;
-      instance.__dbgInt = true;
-       instance.interceptors.request.use(config => {
-         if (!_shouldIntercept() || !_networkCaptureEnabled) return config;
-        const id = `ax-${Date.now()}-${Math.random().toString(36).slice(2,6)}`;
-        config._dbgId = id;
-        config._dbgT0 = Date.now();
-        const url = config.baseURL
-          ? config.baseURL.replace(/\/+$/, '') + '/' + (config.url || '').replace(/^\/+/, '')
-          : (config.url || '');
-        const h = _flattenHeaders(typeof config.headers?.toJSON === 'function' ? config.headers.toJSON() : config.headers);
-        let body = null;
-        if (config.data != null) { try { body = typeof config.data === 'string' ? config.data : JSON.parse(JSON.stringify(config.data)); } catch { body = String(config.data); } }
-        mainCh.send({ type:'network', phase:'request', id, url, method:(config.method||'GET').toUpperCase(), requestHeaders:h, requestBody:body });
-        return config;
-      }, e => Promise.reject(e));
-       instance.interceptors.response.use(resp => {
-         if (!_shouldIntercept() || !_networkCaptureEnabled) return resp;
-         const c = resp.config || {};
-         if (!c._dbgId) return resp;
-        const url = c.baseURL ? c.baseURL.replace(/\/+$/,'') + '/' + (c.url||'').replace(/^\/+/,'') : (c.url||'');
-        const dur = c._dbgT0 ? Date.now() - c._dbgT0 : 0;
-        const rh = {};
-        try { const h = typeof resp.headers?.toJSON === 'function' ? resp.headers.toJSON() : resp.headers;
-          if (h) Object.entries(h).forEach(([k,v]) => { if (typeof v === 'string') rh[k] = v; }); } catch {}
-        let body = resp.data;
-        if (body && typeof body === 'object') { try { body = JSON.parse(JSON.stringify(body)); } catch {} }
-        mainCh.send({ type:'network', phase:'response', id:c._dbgId, url, method:(c.method||'GET').toUpperCase(),
-          status:resp.status, statusText:resp.statusText, duration:dur, responseHeaders:rh, responseBody:body });
-        return resp;
-       }, err => {
-         if (!_shouldIntercept() || !_networkCaptureEnabled) return Promise.reject(err);
-         const c = err?.config || {};
-         if (c._dbgId) {
-          const url = c.baseURL ? c.baseURL.replace(/\/+$/,'') + '/' + (c.url||'').replace(/^\/+/,'') : (c.url||'');
-          const dur = c._dbgT0 ? Date.now() - c._dbgT0 : 0;
-          const r = err?.response;
-          if (r) { let b = r.data; if (b && typeof b === 'object') { try { b = JSON.parse(JSON.stringify(b)); } catch {} }
-            mainCh.send({ type:'network', phase:'response', id:c._dbgId, url, method:(c.method||'GET').toUpperCase(), status:r.status, statusText:r.statusText, duration:dur, responseBody:b });
-          } else { mainCh.send({ type:'network', phase:'error', id:c._dbgId, url, method:(c.method||'GET').toUpperCase(), duration:dur, error:err?.message||String(err) }); }
-        }
-        return Promise.reject(err);
-      });
-    }
-
-    addDbgInterceptors(axios);
+    _addDbgInterceptors(axios);
     const _create = axios.create.bind(axios);
     axios.create = function(...args) {
       const inst = _create(...args);
-      addDbgInterceptors(inst);
+      _addDbgInterceptors(inst);
       return inst;
     };
     _console.log('[RNDebugSDK] Axios interceptor active (global + create)');
@@ -555,6 +817,22 @@ setTimeout(() => {
 }, 0);
 
 // ─── Redux Enhancer ──────────────────────────────────────────────────────────
+function _serializeReduxAction(action) {
+  if (typeof action === 'function') {
+    return { type: `[Function: ${action.name || 'thunk'}]` };
+  }
+  return action || { type: '@@UNKNOWN' };
+}
+
+function _sendReduxPayload(action, nextState, index) {
+  reduxCh.send({
+    type: 'redux',
+    action: _serializeReduxAction(action),
+    nextState: _serializeReduxState(nextState),
+    index,
+  });
+}
+
 function reduxEnhancer(createStore) {
   return (reducer, preloadedState, enhancer) => {
     const store = createStore(reducer, preloadedState, enhancer);
@@ -562,31 +840,14 @@ function reduxEnhancer(createStore) {
 
     // Send initial state
     try {
-      const initState = store.getState();
-      let safeInit;
-      try {
-        const s = JSON.stringify(initState, (_, v) => typeof v === 'bigint' ? v.toString() : v);
-        safeInit = s.length > 1_000_000 ? { __truncated: true, sizeBytes: s.length, keys: Object.keys(initState) } : JSON.parse(s);
-      } catch { safeInit = { __error: 'State not serializable' }; }
-      reduxCh.send({ type: 'redux', action: { type: '@@INIT' }, nextState: safeInit, index: actionCount++ });
+      _sendReduxPayload({ type: '@@INIT' }, store.getState(), actionCount++);
     } catch {}
 
     const origDispatch = store.dispatch;
     store.dispatch = (action) => {
       const result = origDispatch(action);
       try {
-        const nextState = store.getState();
-        const safeAction = typeof action === 'function'
-          ? { type: `[Function: ${action.name || 'thunk'}]` }
-          : (action || { type: '@@UNKNOWN' });
-        let safeState;
-        try {
-          const s = JSON.stringify(nextState, (_, v) => typeof v === 'bigint' ? v.toString() : v);
-          safeState = s.length > 1_000_000
-            ? { __truncated: true, sizeBytes: s.length, keys: Object.keys(nextState) }
-            : JSON.parse(s);
-        } catch { safeState = { __error: 'State not serializable' }; }
-        reduxCh.send({ type: 'redux', action: safeAction, nextState: safeState, index: actionCount++ });
+        _sendReduxPayload(action, store.getState(), actionCount++);
       } catch {}
       return result;
     };
@@ -600,18 +861,7 @@ let _mwActionCount = 0;
 const reduxMiddleware = store => next => action => {
   const result = next(action);
   try {
-    const nextState = store.getState();
-    const safeAction = typeof action === 'function'
-      ? { type: `[Function: ${action.name || 'thunk'}]` }
-      : (action || { type: '@@UNKNOWN' });
-    let safeState;
-    try {
-      const s = JSON.stringify(nextState, (_, v) => typeof v === 'bigint' ? v.toString() : v);
-      safeState = s.length > 1_000_000
-        ? { __truncated: true, sizeBytes: s.length, keys: Object.keys(nextState) }
-        : JSON.parse(s);
-    } catch { safeState = { __error: 'State not serializable' }; }
-    reduxCh.send({ type: 'redux', action: safeAction, nextState: safeState, index: _mwActionCount++ });
+    _sendReduxPayload(action, store.getState(), _mwActionCount++);
   } catch {}
   return result;
 };
@@ -686,6 +936,24 @@ try {
 
 // ─── Performance + Memory Metrics ────────────────────────────────────────────
 // Sends FPS, JS thread time, and memory stats every 2 seconds
+function _appendHermesMemory(perfData) {
+  try {
+    if (!global.HermesInternal || typeof global.HermesInternal.getRuntimeProperties !== 'function') return;
+    const props = global.HermesInternal.getRuntimeProperties();
+    perfData.heapUsed = props['js_heapSize'] || 0;
+    perfData.heapTotal = props['js_totalHeapSize'] || 0;
+    perfData.native = props['js_nativeHeapSize'] || 0;
+  } catch {}
+}
+
+function _appendJSThreadTime(perfData) {
+  try {
+    if (global.performance && typeof global.performance.now === 'function') {
+      perfData.jsThread = global.performance.now() % 16.67;
+    }
+  } catch {}
+}
+
 (function startPerfMetrics() {
   let frameCount = 0;
   let lastTime = Date.now();
@@ -709,23 +977,8 @@ try {
     lastTime = now;
 
     const perfData = { type: 'perf', fps };
-
-    // Hermes memory stats
-    try {
-      if (global.HermesInternal && typeof global.HermesInternal.getRuntimeProperties === 'function') {
-        const props = global.HermesInternal.getRuntimeProperties();
-        perfData.heapUsed = props['js_heapSize'] || 0;
-        perfData.heapTotal = props['js_totalHeapSize'] || 0;
-        perfData.native = props['js_nativeHeapSize'] || 0;
-      }
-    } catch {}
-
-    // Try Performance API for thread timing
-    try {
-      if (global.performance && typeof global.performance.now === 'function') {
-        perfData.jsThread = global.performance.now() % 16.67; // approximate frame time
-      }
-    } catch {}
+    _appendHermesMemory(perfData);
+    _appendJSThreadTime(perfData);
 
     mainCh.send(perfData);
   }, 2000);
@@ -735,98 +988,94 @@ try {
 // Intercepts @react-native-firebase/analytics logEvent calls.
 // The analytics() function returns a new instance each time, so we patch the
 // PROTOTYPE of the analytics module class, not individual instances.
+function _gaSafeParams(p) {
+  if (!p || typeof p !== 'object') return p || {};
+  return _safeClone(p, {});
+}
+
+function _gaMethodToEvent(name) {
+  return name.replace(/^log/, '')
+    .replace(/([A-Z])/g, '_$1')
+    .toLowerCase()
+    .replace(/^_/, '');
+}
+
+function _wrapGA4LogMethod(proto, methodName) {
+  const orig = proto[methodName];
+  if (typeof orig !== 'function') return;
+
+  if (methodName === 'logEvent') {
+    proto.logEvent = function(eventName, params, options) {
+      _sendGAEvent('GA4', eventName, _gaSafeParams(params));
+      return orig.call(this, eventName, params, options);
+    };
+    return;
+  }
+
+  const eventName = _gaMethodToEvent(methodName);
+  proto[methodName] = function() {
+    _sendGAEvent('GA4', eventName, _gaSafeParams(arguments[0]));
+    return orig.apply(this, arguments);
+  };
+}
+
+function _wrapGA4SetMethod(proto, methodName) {
+  const orig = proto[methodName];
+  if (typeof orig !== 'function') return;
+
+  proto[methodName] = function() {
+    const params = {};
+    if (arguments.length === 1) params.value = _gaSafeParams(arguments[0]);
+    if (arguments.length >= 2) {
+      params.name = arguments[0];
+      params.value = arguments[1];
+    }
+    _sendGAEvent('GA4', methodName, params);
+    return orig.apply(this, arguments);
+  };
+}
+
+function _patchGA4Prototype(proto) {
+  if (!proto || proto.__reactoRadarPatched) return false;
+  proto.__reactoRadarPatched = true;
+
+  Object.getOwnPropertyNames(proto).forEach(methodName => {
+    if (!methodName.startsWith('log')) return;
+    _wrapGA4LogMethod(proto, methodName);
+  });
+
+  [
+    'setUserId',
+    'setUserProperty',
+    'setUserProperties',
+    'setConsent',
+    'setDefaultEventParameters',
+    'setAnalyticsCollectionEnabled',
+  ].forEach(methodName => _wrapGA4SetMethod(proto, methodName));
+
+  return true;
+}
+
 (function setupGA4Interceptor() {
   function patchAnalytics() {
     try {
       const analyticsModule = require('@react-native-firebase/analytics');
       if (!analyticsModule) return false;
-
-      // Get the default export (the analytics factory function)
       const analyticsFn = analyticsModule.default || analyticsModule;
       if (typeof analyticsFn !== 'function') return false;
-
-      // Create one instance to get access to its prototype
       const instance = analyticsFn();
       if (!instance || !instance.logEvent) return false;
-
       const proto = Object.getPrototypeOf(instance);
-      if (!proto || proto.__reactoRadarPatched) return false;
-      proto.__reactoRadarPatched = true;
-
-      // Helper to safely serialize params
-      function _safeParams(p) {
-        if (!p || typeof p !== 'object') return p || {};
-        try { return JSON.parse(JSON.stringify(p)); } catch { return {}; }
-      }
-
-      // Convert method name to event name: logAddToCart → add_to_cart
-      function _methodToEvent(name) {
-        // Remove 'log' prefix, then convert camelCase to snake_case
-        return name.replace(/^log/, '')
-          .replace(/([A-Z])/g, '_$1')
-          .toLowerCase()
-          .replace(/^_/, '');
-      }
-
-      // Dynamically wrap ALL methods that start with 'log' on the prototype
-      // This catches logEvent, logPurchase, logAddToCart, logScreenView, etc.
-      // Also catches any future methods Firebase adds.
-      Object.getOwnPropertyNames(proto).forEach(methodName => {
-        if (!methodName.startsWith('log') || typeof proto[methodName] !== 'function') return;
-
-        const orig = proto[methodName];
-
-        if (methodName === 'logEvent') {
-          // logEvent has signature: (eventName, params, options?)
-          proto.logEvent = function(eventName, params, options) {
-            try { mainCh.send({ type: 'ga4', name: eventName, params: _safeParams(params), tag: 'GA4' }); } catch {}
-            return orig.call(this, eventName, params, options);
-          };
-        } else {
-          // All other log methods: logPurchase(params), logScreenView(params), etc.
-          const eventName = _methodToEvent(methodName);
-          proto[methodName] = function() {
-            try {
-              // First argument is always the params object (or undefined for logAppOpen, logTutorialBegin, etc.)
-              const params = arguments[0];
-              mainCh.send({ type: 'ga4', name: eventName, params: _safeParams(params), tag: 'GA4' });
-            } catch {}
-            return orig.apply(this, arguments);
-          };
-        }
-      });
-
-      // Also wrap set* methods to track user properties/consent
-      ['setUserId', 'setUserProperty', 'setUserProperties', 'setConsent', 'setDefaultEventParameters', 'setAnalyticsCollectionEnabled'].forEach(methodName => {
-        if (!proto[methodName] || typeof proto[methodName] !== 'function') return;
-        const orig = proto[methodName];
-        proto[methodName] = function() {
-          try {
-            const params = {};
-            // Capture the arguments as key-value
-            if (arguments.length === 1) params.value = _safeParams(arguments[0]);
-            else if (arguments.length >= 2) { params.name = arguments[0]; params.value = arguments[1]; }
-            mainCh.send({ type: 'ga4', name: methodName, params, tag: 'GA4' });
-          } catch {}
-          return orig.apply(this, arguments);
-        };
-      });
-
+      if (!_patchGA4Prototype(proto)) return false;
       _console.log('[RNDebugSDK] GA4 Analytics prototype interceptor active');
       return true;
-    } catch (e) {
+    } catch {
       return false;
     }
   }
 
-  // Try immediately, then retry at increasing delays
-  if (!patchAnalytics()) {
-    [100, 500, 2000, 5000].forEach(delay => {
-      setTimeout(() => patchAnalytics(), delay);
-    });
-  }
+  if (!patchAnalytics()) [100, 500, 2000, 5000].forEach(delay => setTimeout(patchAnalytics, delay));
 
-  // Fallback: also patch the module's default export function to wrap returned instances
   setTimeout(() => {
     try {
       const mod = require('@react-native-firebase/analytics');
@@ -836,42 +1085,43 @@ try {
       mod.__reactoRadarWrapped = true;
       mod.default = function() {
         const inst = origDefault.apply(this, arguments);
-        // Ensure prototype is patched (in case new prototype was created)
         if (inst && inst.logEvent) {
           const p = Object.getPrototypeOf(inst);
           if (p && !p.__reactoRadarPatched) patchAnalytics();
         }
         return inst;
       };
-      // Copy static properties
       Object.keys(origDefault).forEach(k => { mod.default[k] = origDefault[k]; });
     } catch {}
   }, 50);
 })();
 
 // ─── PostHog Interceptor ─────────────────────────────────────────────────────
+function _wrapAnalyticsMethod(target, methodName, tag, mapper) {
+  if (typeof target[methodName] !== 'function') return;
+  const orig = target[methodName];
+  target[methodName] = function() {
+    const mapped = mapper(arguments, methodName);
+    if (mapped) _sendGAEvent(tag, mapped.name, mapped.params);
+    return orig.apply(this, arguments);
+  };
+}
+
 (function setupPostHogInterceptor() {
   function patchPostHog() {
     try {
       const posthog = require('posthog-react-native');
       if (!posthog) return false;
       const ph = posthog.default || posthog;
-      // PostHog may export a class or singleton
       const target = typeof ph === 'function' ? ph.prototype : ph;
       if (!target || target.__reactoRadarPatched) return false;
 
       const methods = ['capture', 'identify', 'screen', 'alias', 'group', 'register', 'optIn', 'optOut'];
       methods.forEach(methodName => {
-        if (typeof target[methodName] !== 'function') return;
-        const orig = target[methodName];
-        target[methodName] = function() {
-          try {
-            const name = methodName === 'capture' ? (arguments[0] || methodName) : methodName;
-            const params = methodName === 'capture' ? (arguments[1] || {}) : (arguments[0] || {});
-            try { mainCh.send({ type: 'ga4', name: String(name), params: JSON.parse(JSON.stringify(params)), tag: 'PostHog' }); } catch {}
-          } catch {}
-          return orig.apply(this, arguments);
-        };
+        _wrapAnalyticsMethod(target, methodName, 'PostHog', (args, name) => ({
+          name: name === 'capture' ? (args[0] || name) : name,
+          params: name === 'capture' ? (args[1] || {}) : (args[0] || {}),
+        }));
       });
       target.__reactoRadarPatched = true;
       _console.log('[RNDebugSDK] PostHog interceptor active');
@@ -882,6 +1132,25 @@ try {
 })();
 
 // ─── Branch Interceptor ──────────────────────────────────────────────────────
+function _patchBranchEventPrototype(branch) {
+  if (!branch?.BranchEvent) return;
+  const proto = branch.BranchEvent.prototype;
+  if (!proto || proto.__reactoRadarPatched) return;
+
+  ['logEvent', 'logTo'].forEach(methodName => {
+    if (typeof proto[methodName] !== 'function') return;
+    const orig = proto[methodName];
+    proto[methodName] = function() {
+      const name = this._name || this.name || 'BranchEvent';
+      const data = this._customData || this.customData || {};
+      _sendGAEvent('Branch', name, data);
+      return orig.apply(this, arguments);
+    };
+  });
+
+  proto.__reactoRadarPatched = true;
+}
+
 (function setupBranchInterceptor() {
   function patchBranch() {
     try {
@@ -890,53 +1159,15 @@ try {
       const br = branch.default || branch;
       if (!br || br.__reactoRadarPatched) return false;
 
-      // Branch.logEvent is a static method
       const methods = ['logEvent', 'logStandardEvent', 'logCustomEvent'];
       methods.forEach(methodName => {
-        if (typeof br[methodName] !== 'function') return;
-        const orig = br[methodName];
-        br[methodName] = function() {
-          try {
-            const name = arguments[0] || methodName;
-            const params = arguments[1] || {};
-            try { mainCh.send({ type: 'ga4', name: String(name), params: JSON.parse(JSON.stringify(params)), tag: 'Branch' }); } catch {}
-          } catch {}
-          return orig.apply(this, arguments);
-        };
+        _wrapAnalyticsMethod(br, methodName, 'Branch', (args, name) => ({
+          name: args[0] || name,
+          params: args[1] || {},
+        }));
       });
 
-      // Intercept BranchEvent.logEvent() — this is how Branch events are actually dispatched
-      // Pattern: new BranchEvent(name, buos, params).logEvent()
-      if (branch.BranchEvent) {
-        const BEProto = branch.BranchEvent.prototype;
-        if (BEProto && !BEProto.__reactoRadarPatched) {
-          // Patch logEvent (the primary dispatch method)
-          if (typeof BEProto.logEvent === 'function') {
-            const origLogEvent = BEProto.logEvent;
-            BEProto.logEvent = function() {
-              try {
-                const name = this._name || this.name || 'BranchEvent';
-                const data = this._customData || this.customData || {};
-                mainCh.send({ type: 'ga4', name: String(name), params: JSON.parse(JSON.stringify(data)), tag: 'Branch' });
-              } catch {}
-              return origLogEvent.apply(this, arguments);
-            };
-          }
-          // Also patch logTo if it exists (older Branch SDK versions)
-          if (typeof BEProto.logTo === 'function') {
-            const origLogTo = BEProto.logTo;
-            BEProto.logTo = function() {
-              try {
-                const name = this._name || this.name || 'BranchEvent';
-                const data = this._customData || this.customData || {};
-                mainCh.send({ type: 'ga4', name: String(name), params: JSON.parse(JSON.stringify(data)), tag: 'Branch' });
-              } catch {}
-              return origLogTo.apply(this, arguments);
-            };
-          }
-          BEProto.__reactoRadarPatched = true;
-        }
-      }
+      _patchBranchEventPrototype(branch);
 
       br.__reactoRadarPatched = true;
       _console.log('[RNDebugSDK] Branch interceptor active');
@@ -990,15 +1221,10 @@ try {
         'convertedObjectIDs', 'convertedObjectIDsAfterSearch', 'convertedFilters',
         'viewedObjectIDs', 'viewedFilters'];
       methods.forEach(methodName => {
-        if (typeof aa[methodName] !== 'function') return;
-        const orig = aa[methodName];
-        aa[methodName] = function() {
-          try {
-            const params = arguments[0] || {};
-            try { mainCh.send({ type: 'ga4', name: methodName, params: JSON.parse(JSON.stringify(params)), tag: 'Algolia' }); } catch {}
-          } catch {}
-          return orig.apply(this, arguments);
-        };
+        _wrapAnalyticsMethod(aa, methodName, 'Algolia', args => ({
+          name: methodName,
+          params: args[0] || {},
+        }));
       });
       aa.__reactoRadarPatched = true;
       _console.log('[RNDebugSDK] Algolia Insights interceptor active');
