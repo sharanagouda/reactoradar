@@ -600,7 +600,7 @@ function _loadVersionHistory() {
       } else if (isPackaged) {
         actionHtml = '<button class="version-install-btn" title="Download .dmg for this version">Download</button>';
       } else {
-        actionHtml = `<button class="version-npm-btn" title="Copy npm install command">npx @${esc(r.version)}</button>`;
+        actionHtml = `<button class="version-npm-btn" title="Copy npm install command">npx reactoradar@${esc(r.version)}</button>`;
       }
 
       row.innerHTML = `

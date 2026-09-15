@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 'use strict';
 
+const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { execSync, spawn } = require('child_process');
 
@@ -12,6 +14,38 @@ const C = {
 const args = process.argv.slice(2);
 const command = args[0] || 'start';
 const appDir = path.resolve(__dirname, '..');
+
+// electron is a devDependency (electron-builder requires that), so `npx reactoradar`
+// doesn't get it installed automatically. It's installed on demand into a directory
+// of its own — never into appDir, since appDir's own package.json lists build-only
+// devDependencies (electron-builder, electron-devtools-installer) that `npm install`
+// would reconcile and install alongside it. Persisting the side install means
+// electron is only ever downloaded once per machine, not on every fresh npx run.
+const electronRuntimeDir = path.join(os.homedir(), '.reactoradar', 'electron-runtime');
+
+function findElectronBin() {
+  const appDirBin = path.join(appDir, 'node_modules', '.bin', 'electron');
+  if (fs.existsSync(appDirBin)) return appDirBin;
+  const sideBin = path.join(electronRuntimeDir, 'node_modules', '.bin', 'electron');
+  if (fs.existsSync(sideBin)) return sideBin;
+  return null;
+}
+
+function installElectron() {
+  console.log(C.yellow + '  Installing electron (first run only)...' + C.reset);
+  const pkg = require(path.join(appDir, 'package.json'));
+  const electronRange = (pkg.devDependencies && pkg.devDependencies.electron) || 'latest';
+  fs.mkdirSync(electronRuntimeDir, { recursive: true });
+  const sidePkgPath = path.join(electronRuntimeDir, 'package.json');
+  if (!fs.existsSync(sidePkgPath)) {
+    fs.writeFileSync(sidePkgPath, JSON.stringify({ name: 'reactoradar-electron-runtime', private: true }));
+  }
+  execSync(`npm install electron@${electronRange} --no-save --no-audit --no-fund`, {
+    cwd: electronRuntimeDir,
+    stdio: 'inherit',
+  });
+  return path.join(electronRuntimeDir, 'node_modules', '.bin', 'electron');
+}
 
 function printHelp() {
   console.log();
@@ -34,17 +68,10 @@ switch (command) {
   case 'start':
   case 'launch':
   case 'open': {
-    // Ensure electron is installed
-    try {
-      require.resolve('electron');
-    } catch {
-      console.log(C.yellow + '  Installing electron...' + C.reset);
-      execSync('npm install', { cwd: appDir, stdio: 'inherit' });
-    }
+    const electronPath = findElectronBin() || installElectron();
     console.log(C.green + '  Launching ReactoRadar...' + C.reset);
     const env = { ...process.env };
     delete env.ELECTRON_RUN_AS_NODE;
-    const electronPath = path.join(appDir, 'node_modules', '.bin', 'electron');
     const child = spawn(electronPath, [appDir], { env, stdio: 'inherit', detached: true });
     child.unref();
     break;
