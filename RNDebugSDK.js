@@ -488,7 +488,8 @@ function _readXHRBody(xhr) {
   const rType = xhr.responseType || '';
   if (rType === 'json') return xhr.response;
   if (rType !== '' && rType !== 'text') {
-    return `[${rType} response — ${xhr.response?.size || xhr.response?.byteLength || '?'} bytes]`;
+    const size = xhr.response?.size ?? xhr.response?.byteLength;
+    return `[${rType} response — ${size != null ? size : '?'} bytes]`;
   }
 
   let text = '';
